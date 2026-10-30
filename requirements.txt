@@ -21,10 +21,11 @@ orjson==3.11.3                              # ORJSONResponse
 pydantic==2.11.7
 pydantic-settings==2.10.1                   # infrastructure/config/settings.py
 
-# ── PostgreSQL (psycopg v3) and Supabase ─────────────────────────────
+# ── PostgreSQL (psycopg v3) ──────────────────────────────────────────
 psycopg[binary]==3.2.10
 psycopg-pool==3.2.6                         # sync main pool + async checkpoint pool
-supabase==2.17.0                            # profiles / saved trips (REST)
+                                            # (profiles, checkpoints, pgvector: one database)
+pgvector==0.4.1                             # registers the vector type on each connection
 
 # ── Firebase (Firestore caches) ──────────────────────────────────────
 firebase-admin==7.1.0

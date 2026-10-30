@@ -18,7 +18,6 @@ from functools import lru_cache, partial
 from typing import Any
 
 from langchain_core.runnables import Runnable
-from supabase import Client
 
 from app.infrastructure.activities.idea_generator import (
     GeminiActivityIdeaGenerator,
@@ -62,10 +61,8 @@ from app.infrastructure.database.postgres import (
 from app.infrastructure.database.session_ownership import (
     SessionOwnershipRepository,
 )
-from app.infrastructure.database.supabase import (
-    SupabaseSavedTripStore,
-    SupabaseUserProfileStore,
-    create_supabase_client,
+from app.infrastructure.database.user_profiles import (
+    PostgresUserProfileStore,
 )
 from app.infrastructure.factual_qa.gemini import (
     GeminiFactualAnswerWriter,
@@ -193,33 +190,10 @@ def get_firestore_cache_store() -> FirestoreCacheStore:
 
 
 @lru_cache(maxsize=1)
-def get_supabase_client() -> Client:
-    """Return the shared Supabase REST client."""
-
-    settings = _settings()
-
-    return create_supabase_client(
-        settings.SUPABASE_URL,
-        settings.SUPABASE_API_KEY,
-    )
-
-
-@lru_cache(maxsize=1)
-def get_user_profile_store() -> SupabaseUserProfileStore:
+def get_user_profile_store() -> PostgresUserProfileStore:
     """Return the relational user-profile store."""
 
-    return SupabaseUserProfileStore(
-        client=get_supabase_client(),
-    )
-
-
-@lru_cache(maxsize=1)
-def get_saved_trip_store() -> SupabaseSavedTripStore:
-    """Return the completed-trip store."""
-
-    return SupabaseSavedTripStore(
-        client=get_supabase_client(),
-    )
+    return PostgresUserProfileStore()
 
 
 @lru_cache(maxsize=1)
@@ -638,8 +612,9 @@ def get_new_trip_intake() -> NewTripIntake:
 def init_resources() -> None:
     """Open storage and create schemas at application startup."""
 
-    init_connection_pool(_settings().SUPABASE_POSTGRES_URI)
+    init_connection_pool(_settings().DATABASE_URL)
 
+    get_user_profile_store().ensure_schema()
     get_travel_option_store().ensure_schema()
     get_semantic_preference_store().ensure_schema()
 
@@ -837,7 +812,7 @@ async def init_graph() -> GraphRuntime:
         if _GraphResources.runtime is not None:
             return _GraphResources.runtime
 
-        pool = await open_checkpoint_pool(_settings().SUPABASE_POSTGRES_URI)
+        pool = await open_checkpoint_pool(_settings().DATABASE_URL)
 
         try:
             saver = ResilientAsyncPostgresSaver(pool)
@@ -937,9 +912,7 @@ _ALL_GETTERS = (
     get_travel_option_store,
     get_embedder,
     get_session_access_service,
-    get_saved_trip_store,
     get_user_profile_store,
-    get_supabase_client,
     get_firestore_cache_store,
 )
 

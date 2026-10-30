@@ -13,6 +13,7 @@ from contextlib import contextmanager
 from threading import Lock
 from typing import Any
 
+import psycopg
 from psycopg import Connection
 from psycopg_pool import ConnectionPool
 
@@ -66,6 +67,11 @@ def init_connection_pool(conninfo: str) -> None:
         if _connection_pool is not None:
             return
 
+        # Every pooled connection registers the vector type, so on a fresh
+        # database the extension must exist before the first one opens.
+        if _HAS_PGVECTOR_PYTHON:
+            _create_vector_extension(conninfo)
+
         pool = ConnectionPool(
             conninfo=conninfo,
             min_size=POOL_MIN_SIZE,
@@ -86,6 +92,19 @@ def init_connection_pool(conninfo: str) -> None:
         _connection_pool = pool
 
     safe_log(logger, logging.INFO, "storage.postgres.pool_opened")
+
+
+def _create_vector_extension(conninfo: str) -> None:
+    """Enable pgvector on a one-off connection; a failure is left to the pool.
+
+    Without the extension the pool's connections can't register the vector
+    type and the pool reports that, so this step only logs.
+    """
+    try:
+        with psycopg.connect(conninfo, autocommit=True) as conn:
+            conn.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+    except Exception:
+        safe_log(logger, logging.WARNING, "storage.postgres.vector_extension_unavailable")
 
 
 def close_connection_pool() -> None:

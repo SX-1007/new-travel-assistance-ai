@@ -46,11 +46,12 @@ class Settings(BaseSettings):
     GEMINI_UTILITY_MODEL: str = "gemini-3.1-flash-lite"
     GEMINI_EMBED_MODEL: str = "gemini-embedding-2"
 
-    # ── Supabase ─────────────────────────────────────────────────────
-    SUPABASE_URL: str = Field(..., min_length=1)
-    SUPABASE_API_KEY: str = Field(..., min_length=1)
-    SUPABASE_POSTGRES_URI: str = Field(
-        ..., min_length=1, description="PostgreSQL connection string for pgvector"
+    # ── PostgreSQL ───────────────────────────────────────────────────
+    # Profiles, checkpoints, session ownership and pgvector tables. Use a
+    # direct connection: the app pools its own connections and sets a
+    # per-connection statement timeout, which a transaction pooler drops.
+    DATABASE_URL: str = Field(
+        ..., min_length=1, description="Direct PostgreSQL connection string"
     )
 
     # ── Firebase ─────────────────────────────────────────────────────

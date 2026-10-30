@@ -29,7 +29,6 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from google.api_core import exceptions as google_errors
 from langgraph.errors import GraphRecursionError
-from postgrest.exceptions import APIError as SupabaseApiError
 from psycopg_pool import PoolTimeout
 
 from app.modules.budget.exceptions import CurrencyProviderError
@@ -131,7 +130,6 @@ ERROR_RESPONSES: Final[Mapping[type[BaseException], ErrorResponse]] = {
     # ── Storage ──
     psycopg.OperationalError: _STORE_UNAVAILABLE,
     PoolTimeout: _STORE_UNAVAILABLE,
-    SupabaseApiError: _STORE_UNAVAILABLE,
     ProfileUnavailable: ErrorResponse(
         status.HTTP_503_SERVICE_UNAVAILABLE,
         "Your profile could not be loaded or saved. Please retry shortly.",

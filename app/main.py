@@ -50,8 +50,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger("travel_assistant")
 
-# These clients log every request URL at INFO, and Supabase URLs carry the
-# user id (``?id=eq.<user>``); keep only their warnings.
+# These clients log every request URL at INFO, and provider URLs can carry
+# API keys or user data in the query string; keep only their warnings.
 for _noisy in ("httpx", "httpcore", "urllib3"):
     logging.getLogger(_noisy).setLevel(logging.WARNING)
 

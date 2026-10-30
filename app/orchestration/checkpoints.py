@@ -205,7 +205,7 @@ _MIGRATION_DESYNC_ERRORS = (DuplicateColumn, DuplicateTable, DuplicateObject)
 class ResilientAsyncPostgresSaver(AsyncPostgresSaver):
     """``AsyncPostgresSaver`` that retries a dropped connection.
 
-    The Supabase pooler (or a NAT) can drop a socket after the pool's
+    A pooler, the server or a NAT can drop a socket after the pool's
     checkout check, so a checkpoint write may hit ``OperationalError``.
     Reads and writes are idempotent upserts keyed by checkpoint id, so a
     retry on a fresh connection is safe. ``alist`` is not retried: a partly

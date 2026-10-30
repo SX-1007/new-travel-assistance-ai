@@ -16,7 +16,7 @@ from psycopg_pool import AsyncConnectionPool
 
 
 CHECKPOINT_POOL_MAX_SIZE: Final = 4
-# Retire idle connections before the Supabase pooler or a NAT drops them.
+# Retire idle connections before a pooler, the server or a NAT drops them.
 _MAX_IDLE_SECONDS: Final = 240.0
 _CHECKOUT_TIMEOUT_SECONDS: Final = 30.0
 
