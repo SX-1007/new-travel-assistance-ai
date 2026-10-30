@@ -1,0 +1,43 @@
+# ════════════════════════════════════════════════════════════════════
+#  Travel Assistant AI backend — Python dependencies
+#  Every pin is the version the test suite runs against.
+#  Update deliberately, then re-run `python -m pytest`.
+#  Only packages the code imports are listed.
+# ════════════════════════════════════════════════════════════════════
+
+# ── Agent orchestration ──────────────────────────────────────────────
+langgraph==0.2.76                           # StateGraph, ToolNode (prebuilt is bundled in 0.2.x)
+langgraph-checkpoint==2.1.2
+langgraph-checkpoint-postgres==2.0.21       # AsyncPostgresSaver / PostgresSaver
+langchain-core==0.3.75
+langchain-google-genai==2.1.12              # Gemini chat model and embeddings
+google-api-core==2.30.3                     # Gemini error types mapped in api/errors.py
+
+# ── API / ASGI server ────────────────────────────────────────────────
+fastapi[standard]==0.115.14                 # includes uvicorn and httpx (TestClient)
+orjson==3.11.3                              # ORJSONResponse
+
+# ── Settings ─────────────────────────────────────────────────────────
+pydantic==2.11.7
+pydantic-settings==2.10.1                   # infrastructure/config/settings.py
+
+# ── PostgreSQL (psycopg v3) and Supabase ─────────────────────────────
+psycopg[binary]==3.2.10
+psycopg-pool==3.2.6                         # sync main pool + async checkpoint pool
+supabase==2.17.0                            # profiles / saved trips (REST)
+
+# ── Firebase (Firestore caches) ──────────────────────────────────────
+firebase-admin==7.1.0
+
+# ── HTTP ─────────────────────────────────────────────────────────────
+requests==2.32.5                            # SerpAPI, Mapbox, currency providers
+
+# ── Locale / countries ───────────────────────────────────────────────
+pycountry==24.6.1
+babel==2.17.0
+
+# ── Caching ──────────────────────────────────────────────────────────
+cachetools==5.5.2
+
+# ── Tests ────────────────────────────────────────────────────────────
+pytest==8.4.2

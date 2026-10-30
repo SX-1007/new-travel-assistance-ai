@@ -1,0 +1,53 @@
+# ── Secrets ──────────────────────────────────────────────────────────
+# Real settings stay on this machine; only the *.example templates are shared.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*service-account*.json
+*credentials*.json
+
+# ── Documentation (kept locally, not pushed) ─────────────────────────
+*.md
+
+# ── Python ───────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+*.egg-info/
+build/
+
+# ── Frontend (Node) ──────────────────────────────────────────────────
+node_modules/
+dist/
+dist-ssr/
+.vite/
+coverage/
+*.tsbuildinfo
+*.local
+npm-debug.log*
+
+# ── Logs and local data ──────────────────────────────────────────────
+*.log
+logs/
+*.sqlite
+*.sqlite3
+*.db
+
+# ── Editors, OS and local tools ──────────────────────────────────────
+.claude/
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
