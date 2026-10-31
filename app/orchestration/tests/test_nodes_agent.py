@@ -237,7 +237,13 @@ def test_bound_tools_exclude_the_gate_bypass_and_the_duplicate_edit_path():
     assert "update_total_budget" not in names and "modify_existing_booking" not in names
     assert {"edit_itinerary", "propose_budget_change", "update_trip_details"} <= names
     assert [tool.name for tool in toolset.edit] == ["edit_itinerary"]
-    assert {tool.name for tool in toolset.budget_decision} == {"propose_budget_change", "confirm_recommended_budget"}
+    assert {tool.name for tool in toolset.budget_decision} == {
+        "propose_budget_change",
+        "confirm_recommended_budget",
+        "keep_current_plan",
+    }
+    # Declining only answers a pending recommendation.
+    assert "keep_current_plan" not in names
 
     models = AgentModels.bind(FakeModel(), toolset)
     assert set(models.agent.tools) == names and models.edit.tools == ["edit_itinerary"]

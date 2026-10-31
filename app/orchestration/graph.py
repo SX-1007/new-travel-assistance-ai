@@ -3,7 +3,8 @@
     New trip:  START → process_initial_form → execute_validated_transaction
                → generate_reviewed_response → promote_candidate / END
     Chat:      START → begin_chat_turn → factual_router → (factual nodes | agent)
-               agent ⇄ tools → post_tool_processing → replan / review / gate / agent
+               agent ⇄ tools → post_tool_processing → check / review / gate / agent
+               check_trip_change → replan | budget_gate_response | END
     Budget:    START → assess_chat_budget | resume_accepted_budget
                → execute_validated_transaction … | budget_gate_response
 
@@ -86,6 +87,11 @@ def build_graph(nodes: Mapping[str, Callable[..., Any]], toolset: AgentToolset) 
         "post_tool_processing",
         router.route_after_post_tool,
         sorted(set(router.POST_TOOL_ROUTES.values())),
+    )
+    graph.add_conditional_edges(
+        "check_trip_change",
+        router.route_after_trip_change,
+        sorted(set(router.TRIP_CHANGE_ROUTES.values())),
     )
 
     # Budget.

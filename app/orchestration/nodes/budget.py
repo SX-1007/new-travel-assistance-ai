@@ -6,6 +6,10 @@ total, the confirmed assessment and the financials derived from it go into
 ``plan_overrides`` and the planning transaction runs (the current plan stays
 public until promotion) → otherwise ``budget_gate_response`` replies.
 
+A recommendation raised by a chat trip change (``pending_trip_change``) is
+judged against the trip with that change applied, and an acceptance carries
+the change into ``plan_overrides`` with the budget.
+
 Acceptance builds the financials at once from the assessment's own exchange
 rate (no provider call). ``resume_accepted_budget`` handles a checkpoint left
 with an accepted decision (an interrupted run, or a stage saved by an
@@ -43,8 +47,10 @@ from app.orchestration.nodes.replies import (
     BUDGET_UNAVAILABLE_TEXT,
     server_reply,
 )
-from app.orchestration.nodes.transaction import planning_reset
+from app.orchestration.nodes.transaction import committed_overrides, planning_reset, transaction_view
+from app.orchestration.pending_trip import pending_trip_updates, with_pending_trip
 from app.orchestration.state import AgentState
+from app.orchestration.tools.trip import TRIP_DETAIL_FIELDS
 from app.orchestration.workflows.output_review import effective_plan_revision
 from app.shared.observability import LogContext, log_event
 
@@ -74,6 +80,8 @@ async def assess_chat_budget_node(
 
     log_context = node_log_context(config)
     proposal = state.pending_budget_proposal
+    # The trip the pending recommendation was made for.
+    view = with_pending_trip(state)
 
     if state.chat_budget_action == "accept_recommended":
         proposal = {
@@ -87,14 +95,14 @@ async def assess_chat_budget_node(
             await asyncio.to_thread(
                 evaluate_chat_budget,
                 proposal=dict(proposal or {}),
-                pending_confirmation=state.pending_budget_confirmation,
-                current_assessment=state.budget_assessment,
-                origin=state.origin_country or "",
-                destination=state.country or "",
-                destination_city=primary_destination_city(state.city),
-                start_date=state.start_date or "",
-                end_date=state.end_date or "",
-                num_people=state.num_people or 1,
+                pending_confirmation=view.pending_budget_confirmation,
+                current_assessment=view.budget_assessment,
+                origin=view.origin_country or "",
+                destination=view.country or "",
+                destination_city=primary_destination_city(view.city),
+                start_date=view.start_date or "",
+                end_date=view.end_date or "",
+                num_people=view.num_people or 1,
                 assessment_service=budget,
             )
         )
@@ -108,8 +116,8 @@ async def assess_chat_budget_node(
         }
 
         if decision.status == "accepted":
-            amount, assessment = _verified_acceptance(state, proposal, decision, budget)
-            update.update(_accepted_update(state, amount, assessment))
+            amount, assessment = _verified_acceptance(view, proposal, decision, budget)
+            update.update(_accepted_update(state, amount, assessment, trip_updates=pending_trip_updates(state)))
         else:
             update["plan_overrides"] = None
             update["pending_budget_confirmation"] = (
@@ -156,9 +164,13 @@ async def resume_accepted_budget_node(
         if persisted is None or persisted.model_dump() != assessment.model_dump():
             update = _replan_failure("assessment_expired_or_invalid")
         else:
+            # A trip change accepted with the budget is already in the overrides.
+            trip_updates = {
+                key: value for key, value in committed_overrides(state).items() if key in TRIP_DETAIL_FIELDS
+            }
             update = {
                 "budget_gate_outcome": "accepted",
-                **_accepted_update(state, amount, persisted),
+                **_accepted_update(state, amount, persisted, trip_updates=trip_updates),
             }
 
     _log(log_context, "budget.resume", update)
@@ -314,7 +326,7 @@ def _local_acceptance(
     amount = finite_positive(record.get("accepted_total_base_budget"))
     assessment = parse_assessment(record.get("assessment"))
     target = record.get("target_plan_revision")
-    trip = budget_trip_from_state(state)
+    trip = budget_trip_from_state(transaction_view(state))
 
     if (
         amount is None
@@ -331,7 +343,13 @@ def _local_acceptance(
     return amount, assessment, trip
 
 
-def _accepted_update(state: AgentState, amount: float, assessment: BudgetAssessment) -> dict[str, Any]:
+def _accepted_update(
+    state: AgentState,
+    amount: float,
+    assessment: BudgetAssessment,
+    *,
+    trip_updates: Mapping[str, Any],
+) -> dict[str, Any]:
     dumped = assessment.model_dump()
 
     return {
@@ -343,11 +361,13 @@ def _accepted_update(state: AgentState, amount: float, assessment: BudgetAssessm
             "target_plan_revision": effective_plan_revision(state) + 1,
         },
         "plan_overrides": {
+            **trip_updates,
             "total_base_budget": amount,
             "budget_assessment": dumped,
             **assessment_financials(amount, assessment),
         },
         "pending_budget_confirmation": None,
+        "pending_trip_change": None,
         "post_tool_outcome": None,
         **planning_reset(),
     }
@@ -390,7 +410,7 @@ def _assessment_failure(state: AgentState, reason: str) -> dict[str, Any]:
 
 
 def _replan_failure(reason: str) -> dict[str, Any]:
-    return {**_gate_unavailable(reason), "pending_budget_confirmation": None}
+    return {**_gate_unavailable(reason), "pending_budget_confirmation": None, "pending_trip_change": None}
 
 
 def _log(log_context: LogContext, event: str, update: Mapping[str, Any]) -> None:

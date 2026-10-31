@@ -16,7 +16,7 @@ from app.modules.budget.chat_gate import pending_confirmation_payload
 from app.modules.budget.models import BudgetAssessment
 from app.modules.output_review.service import OutputReviewService
 from app.orchestration.graph import TurnResult
-from app.orchestration.tests.node_fakes import assessment
+from app.orchestration.tests.node_fakes import TRIP, assessment
 
 
 REVIEWER = OutputReviewService(reviewer=object())
@@ -67,6 +67,31 @@ def test_an_inconsistent_or_expired_record_fails_closed():
     response = chat_turn_response(TurnResult(tampered, plan_changed=False))
     assert response.status == "budget_check_unavailable"
     assert response.chat_reply == BUDGET_CHECK_UNAVAILABLE_MESSAGE
+
+
+def test_a_recommendation_for_a_waiting_trip_change_is_judged_against_that_trip():
+    korea = BudgetAssessment.model_validate(
+        assessment(TRIP.model_copy(update={"destination": "Korea", "destination_city": "Seoul"}))
+    )
+    pending = pending_confirmation_payload(korea, reason="insufficient_budget", stated_budget=10.0)
+    state = {
+        **TRIP_STATE,
+        "budget_gate_outcome": "budget_confirmation_required",
+        "pending_budget_confirmation": pending,
+        "pending_trip_change": {"updates": {"country": "Korea", "city": ["Seoul"]}, "total_base_budget": 10.0},
+        "messages": [HumanMessage(content="go to Korea"), AIMessage(content="Please confirm.")],
+    }
+
+    response = chat_turn_response(TurnResult(state, plan_changed=False))
+
+    card = response.budget_confirmation
+    assert response.status == "budget_confirmation_required"
+    assert card.resolved_cities == ["Seoul"]
+    assert response.chat_reply.startswith("For the changed trip (Seoul), MYR 10.00 is below")
+    assert response.chat_reply.endswith("give another amount, or keep your current trip.")
+
+    # Without its trip change the same record belongs to no trip of this session.
+    assert chat_gate({**state, "pending_trip_change": None}) == ("unavailable", None)
 
 
 def test_no_gate_but_a_leftover_record_is_unavailable():

@@ -143,6 +143,16 @@ class AgentState(BaseModel):
         ),
     )
 
+    pending_trip_change: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Checked chat trip change waiting on the pending budget "
+            "recommendation: the trip-detail ``updates`` and the "
+            "``total_base_budget`` in the new home currency. Applied only "
+            "if a sufficient budget is accepted for it."
+        ),
+    )
+
     pending_itinerary_mutation: dict[str, Any] | None = Field(
         default=None,
         description=(
@@ -261,6 +271,7 @@ class AgentState(BaseModel):
     )
 
     post_tool_outcome: Literal[
+        "check_trip_change",
         "replan_full",
         "replan_itinerary",
         "review_candidate",

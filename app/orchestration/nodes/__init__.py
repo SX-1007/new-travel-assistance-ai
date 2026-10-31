@@ -15,6 +15,7 @@ from typing import Any
 
 from langchain_core.runnables import RunnableConfig
 
+from app.modules.destination.service import DestinationResolutionService
 from app.modules.factual_qa.service import FactualQAService
 from app.orchestration.nodes.agent import (
     AgentModels,
@@ -44,6 +45,7 @@ from app.orchestration.nodes.planning import (
 )
 from app.orchestration.nodes.post_tool import EditServices, post_tool_processing_node
 from app.orchestration.nodes.replies import ReplyServices
+from app.orchestration.nodes.trip_change import TripChangeServices, check_trip_change_node
 from app.orchestration.nodes.turn import MemoryExtractionQueue, begin_chat_turn_node
 from app.orchestration.state import AgentState
 
@@ -61,6 +63,8 @@ class GraphServices:
     edits: EditServices
     profiles: ProfileLoader
     factual: FactualQAService
+    # Re-resolves a destination changed in chat, as the trip form does.
+    destinations: DestinationResolutionService
     memory: MemoryExtractionQueue | None = None
 
 
@@ -103,6 +107,15 @@ def build_nodes(services: GraphServices) -> dict[str, Callable[..., Any]]:
         "resume_accepted_budget": _bind(resume_accepted_budget_node, budget=services.planning.budget),
         "budget_gate_response": _bind(budget_gate_response_node, reviewer=reviewer),
         "post_tool_processing": _bind(post_tool_processing_node, edits=services.edits),
+        "check_trip_change": _bind(
+            check_trip_change_node,
+            services=TripChangeServices(
+                destinations=services.destinations,
+                budget=services.planning.budget,
+                currency=services.planning.currency,
+                reviewer=reviewer,
+            ),
+        ),
     }
 
 
@@ -125,6 +138,7 @@ __all__ = [
     "PlanningServices",
     "ProfileLoader",
     "ReplyServices",
+    "TripChangeServices",
     "build_agent_toolset",
     "build_nodes",
 ]

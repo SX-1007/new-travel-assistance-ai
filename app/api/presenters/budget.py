@@ -3,6 +3,7 @@
 The chat graph stores a pending recommendation in
 ``pending_budget_confirmation`` (``modules/budget/chat_gate``); this module
 checks that record against its embedded assessment and the session's trip
+(with a waiting chat trip change applied, ``orchestration/pending_trip``)
 and renders the confirmation card and its text. Nothing a model wrote is
 shown here.
 
@@ -28,6 +29,7 @@ from app.modules.budget.assessment import (
     primary_destination_city,
 )
 from app.modules.budget.models import BudgetAssessment, BudgetTrip
+from app.orchestration.pending_trip import pending_trip_values
 from app.orchestration.trip_intake import BudgetConfirmationRequired
 
 
@@ -97,6 +99,12 @@ def pending_confirmation(
     if not isinstance(raw, Mapping):
         return None
 
+    trip_change = pending_trip_values(state)
+
+    # A recommendation raised by a trip change belongs to the changed trip.
+    if trip_change:
+        state = {**state, **trip_change}
+
     assessment = parse_assessment(raw.get("assessment"))
     trip = _trip(state)
 
@@ -146,13 +154,28 @@ def pending_confirmation(
     except ValidationError:
         return None
 
-    return card.model_copy(update={"chat_reply": confirmation_message(card)})
+    return card.model_copy(update={"chat_reply": confirmation_message(card, trip_change=bool(trip_change))})
 
 
-def confirmation_message(card: BudgetConfirmationResponse) -> str:
+def confirmation_message(card: BudgetConfirmationResponse, *, trip_change: bool = False) -> str:
     """Server text for a confirmation, from the validated card only."""
 
     minimum = f"{card.base_currency} {card.recommended_minimum_budget:,.2f}"
+
+    if trip_change:
+        places = ", ".join(card.resolved_cities)
+        action = (
+            "Use the recommended budget to plan the changed trip, give another amount, "
+            "or keep your current trip."
+        )
+
+        if card.stated_budget is None:
+            return f"For the changed trip ({places}), the provider-grounded minimum is {minimum}. {action}"
+
+        return (
+            f"For the changed trip ({places}), {card.base_currency} {card.stated_budget:,.2f} is below "
+            f"the provider-grounded minimum of {minimum}. {action}"
+        )
 
     if card.stated_budget is None:
         return f"The provider-grounded minimum is {minimum}. Use the recommended budget to continue planning."

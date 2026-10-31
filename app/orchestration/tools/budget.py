@@ -32,6 +32,9 @@ from app.modules.budget.models import (
 from app.orchestration.messages import (
     latest_user_request,
 )
+from app.orchestration.pending_trip import (
+    with_pending_trip,
+)
 from app.orchestration.state import (
     AgentState,
 )
@@ -167,6 +170,8 @@ def propose_budget_change(
     # The model passes the amount and currency exactly as the user said them,
     # and the server converts. Left to convert itself, the model once turned
     # "5000 MYR" into JPY 193,219 and passed that as the home-currency total.
+    # A trip change waiting on a recommendation brings its own currencies.
+    state = with_pending_trip(state)
     home = state.base_currency_code or ""
     destination = state.dest_currency_code or ""
 
@@ -244,9 +249,24 @@ def confirm_recommended_budget() -> dict[str, Any]:
     }
 
 
+@tool
+def keep_current_plan() -> dict[str, Any]:
+    """Decline the pending recommendation: keep the current trip and budget
+    exactly as they are, and drop any trip change waiting on it."""
+
+    return {
+        "status": "budget_proposal",
+        "proposal": {
+            "mode": "decline",
+            "total_base_budget": None,
+        },
+    }
+
+
 __all__ = [
     "update_total_budget",
     "update_budget_category",
     "propose_budget_change",
     "confirm_recommended_budget",
+    "keep_current_plan",
 ]

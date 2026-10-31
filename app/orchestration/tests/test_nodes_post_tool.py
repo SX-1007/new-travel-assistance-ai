@@ -1,12 +1,12 @@
 """Post-tool processing: budget batches, trip changes, edits, category budgets."""
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
 from app.modules.itinerary.editing import apply_edits
 from app.orchestration.edit_intent import DAY_CLARIFICATION_MARKER
 from app.orchestration.messages import latest_tool_batch
 from app.orchestration.nodes.post_tool import post_tool_processing_node
-from app.orchestration.nodes.replies import EDIT_FAILED_VALIDATION, SERVER_OWNED_KEY
+from app.orchestration.nodes.replies import EDIT_FAILED_VALIDATION, PLAN_KEPT_TEXT, SERVER_OWNED_KEY
 from app.orchestration.tests.node_fakes import (
     CONFIG,
     Network,
@@ -103,24 +103,91 @@ def test_other_tools_are_ignored_while_a_recommendation_is_pending():
 # ── Trip details ────────────────────────────────────────────────────
 
 
-def test_trip_changes_stay_private_until_the_replan_is_promoted():
+def test_trip_changes_stay_private_and_are_checked_before_any_replan():
     result = {"status": "accepted", "updates": {"num_people": 2}}
     state = committed_state(*tool_turn("we are two now", "update_trip_details", result, num_people=2))
 
     update, _ = process(state)
 
-    assert update["post_tool_outcome"] == "replan_itinerary"
+    assert update["post_tool_outcome"] == "check_trip_change"
     assert update["plan_overrides"] == {"num_people": 2}
+    assert update["pending_budget_proposal"] is None
     assert "num_people" not in update
 
 
-def test_a_new_destination_needs_the_full_replan():
+def test_a_new_destination_is_checked_too():
     result = {"status": "accepted", "updates": {"country": "Korea", "city": ["Seoul"]}}
     state = committed_state(*tool_turn("go to Seoul instead", "update_trip_details", result))
 
     update, _ = process(state)
 
-    assert update["post_tool_outcome"] == "replan_full"
+    assert update["post_tool_outcome"] == "check_trip_change"
+    assert update["plan_overrides"] == {"country": "Korea", "city": ["Seoul"]}
+
+
+def test_a_budget_stated_with_a_trip_change_travels_with_it():
+    # Before, the budget tool won and the new destination was silently dropped.
+    trip = {"status": "accepted", "updates": {"country": "Korea"}}
+    budget = {"status": "budget_proposal", "proposal": {"mode": "amount", "total_base_budget": 900}}
+    state = committed_state(
+        HumanMessage(content="go to Korea instead, with 900"),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {"name": "update_trip_details", "args": {"country": "Korea"}, "id": "a"},
+                {"name": "propose_budget_change", "args": {"amount": 900, "currency": "MYR"}, "id": "b"},
+            ],
+        ),
+        tool_result("update_trip_details", trip, "a"),
+        tool_result("propose_budget_change", budget, "b"),
+    )
+
+    update, _ = process(state)
+
+    assert update["post_tool_outcome"] == "check_trip_change"
+    assert update["plan_overrides"] == {"country": "Korea"}
+    assert update["pending_budget_proposal"] == {"mode": "amount", "total_base_budget": 900.0}
+
+
+def test_keeping_the_current_plan_drops_the_recommendation_and_its_trip_change():
+    decline = {"status": "budget_proposal", "proposal": {"mode": "decline", "total_base_budget": None}}
+    state = committed_state(
+        *tool_turn("no, keep my trip as it is", "keep_current_plan", decline),
+        pending_budget_confirmation={"budget_assessment_id": "a-1"},
+        pending_trip_change={"updates": {"country": "Korea"}, "total_base_budget": 600.0},
+        budget_gate_outcome="budget_confirmation_required",
+    )
+
+    update, _ = process(state)
+
+    assert update["post_tool_outcome"] == "reply_sent"
+    assert update["messages"][0].content == PLAN_KEPT_TEXT
+    assert update["pending_budget_confirmation"] is None and update["pending_trip_change"] is None
+    assert update["budget_gate_outcome"] is None and update["plan_overrides"] is None
+    assert "draft_itinerary" not in update and "plan_revision" not in update
+
+
+def test_declining_together_with_accepting_fails_closed():
+    decline = {"status": "budget_proposal", "proposal": {"mode": "decline", "total_base_budget": None}}
+    confirm = {"status": "budget_proposal", "proposal": {"mode": "confirm", "total_base_budget": None}}
+    state = committed_state(
+        HumanMessage(content="yes no"),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {"name": "keep_current_plan", "args": {}, "id": "a"},
+                {"name": "confirm_recommended_budget", "args": {}, "id": "b"},
+            ],
+        ),
+        tool_result("keep_current_plan", decline, "a"),
+        tool_result("confirm_recommended_budget", confirm, "b"),
+        pending_budget_confirmation={"budget_assessment_id": "a-1"},
+    )
+
+    update, _ = process(state)
+
+    assert update["post_tool_outcome"] == "budget_gate"
+    assert update["budget_gate_reason"] == "conflicting_budget_tool_results"
 
 
 # ── Edits ───────────────────────────────────────────────────────────

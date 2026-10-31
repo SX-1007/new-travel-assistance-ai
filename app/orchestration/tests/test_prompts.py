@@ -15,6 +15,7 @@ from app.orchestration.prompts import (
     prompt_variables,
 )
 from app.orchestration.state import AgentState
+from app.orchestration.tests.node_fakes import TRIP, assessment
 
 
 def day(name):
@@ -158,3 +159,30 @@ def test_a_budget_replan_instruction_states_the_accepted_figures():
     assert "not the budget" in budget
     assert plan_instruction(PlanKind.EDIT, view) == PLAN_INSTRUCTIONS[PlanKind.EDIT]
     assert plan_instruction(PlanKind.BUDGET, AgentState()) == PLAN_INSTRUCTIONS[PlanKind.BUDGET]
+
+
+def decision_payload(state):
+    system, _ = build_budget_decision_messages(state)
+    return system.content, json.loads(system.content.split("instructions):\n", 1)[1])
+
+
+def test_the_budget_decision_sees_the_trip_change_it_would_apply():
+    korea = assessment(TRIP.model_copy(update={"destination": "Korea", "destination_city": "Seoul"}))
+    state = AgentState(
+        messages=[HumanMessage(content="hmm")],
+        pending_budget_confirmation={"budget_assessment_id": korea["assessment_id"], "assessment": korea},
+        pending_trip_change={"updates": {"country": "Korea", "city": ["Seoul"], "num_people": 2}, "total_base_budget": 600.0},
+    )
+
+    text, payload = decision_payload(state)
+
+    assert payload["pending_trip_change"] == {"country": "Korea", "city": ["Seoul"], "num_people": 2}
+    assert "keep_current_plan" in text
+
+
+def test_no_trip_change_is_projected_without_one():
+    state = AgentState(messages=[HumanMessage(content="yes")], pending_budget_confirmation={"budget_assessment_id": "a"})
+
+    _, payload = decision_payload(state)
+
+    assert "pending_trip_change" not in payload

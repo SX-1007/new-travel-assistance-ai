@@ -818,6 +818,7 @@ def get_graph_services() -> GraphServices:
         ),
         profiles=get_profile_loader(),
         factual=get_factual_qa_service(),
+        destinations=get_destination_resolution_service(),
         memory=get_memory_extraction_queue(),
     )
 

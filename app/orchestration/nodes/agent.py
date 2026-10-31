@@ -10,7 +10,8 @@ Tool choice:
   and ``modify_existing_booking`` (``edit_itinerary`` covers flights and
   hotels through the same apply path);
 * the edit-continuation model gets only ``edit_itinerary``; the budget
-  interpreter only ``propose_budget_change`` and ``confirm_recommended_budget``.
+  interpreter only ``propose_budget_change``, ``confirm_recommended_budget``
+  and ``keep_current_plan``.
 """
 
 from __future__ import annotations
@@ -69,6 +70,7 @@ from app.orchestration.state import AgentState
 from app.orchestration.tools.booking import build_search_alternative_opt_tool, edit_itinerary
 from app.orchestration.tools.budget import (
     confirm_recommended_budget,
+    keep_current_plan,
     propose_budget_change,
     update_budget_category,
 )
@@ -159,7 +161,7 @@ def build_agent_toolset(
             update_trip_details,
         ),
         edit=(edit_itinerary,),
-        budget_decision=(propose_budget_change, confirm_recommended_budget),
+        budget_decision=(propose_budget_change, confirm_recommended_budget, keep_current_plan),
     )
 
 

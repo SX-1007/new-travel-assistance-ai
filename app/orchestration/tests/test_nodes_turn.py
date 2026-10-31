@@ -13,6 +13,7 @@ from app.orchestration.nodes.factual import ROUTER_UNAVAILABLE, factual_answer_n
 from app.orchestration.nodes.turn import MemoryExtractionQueue, begin_chat_turn_node
 from app.orchestration.tests.node_fakes import (
     CONFIG,
+    FakeDestinations,
     FakeModel,
     Network,
     ProfileStore,
@@ -37,6 +38,8 @@ def test_turn_start_discards_any_unfinished_transaction():
 
     assert update["candidate_plan"] is None and update["planning_outcome"] is None
     assert update["plan_overrides"] is None and update["factual_issue_codes"] == []
+    # A trip change can't outlive the recommendation it waited on.
+    assert update["pending_trip_change"] is None
 
 
 def test_memory_extraction_does_not_hold_up_the_turn():
@@ -142,6 +145,7 @@ def test_every_node_is_bound_with_the_langgraph_signature():
             edits=network.edits(),
             profiles=loader,
             factual=BrokenFactual(),
+            destinations=FakeDestinations(),
         )
     )
 
@@ -161,6 +165,7 @@ def test_every_node_is_bound_with_the_langgraph_signature():
         "resume_accepted_budget",
         "budget_gate_response",
         "post_tool_processing",
+        "check_trip_change",
     }
 
     for name, node in nodes.items():

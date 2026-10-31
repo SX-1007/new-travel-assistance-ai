@@ -101,7 +101,8 @@ async def begin_chat_turn_node(
     candidate included: otherwise a candidate from an interrupted turn could be
     published by the next tool call. A finished budget gate's outcome is cleared
     too (no recommendation is pending on this path), so it can't be shown again
-    over a later reply.
+    over a later reply, and so is a trip change left without its
+    recommendation.
     """
 
     user_id = user_id_from_config(config)
@@ -118,6 +119,7 @@ async def begin_chat_turn_node(
         **planning_reset(),
         "plan_overrides": None,
         "post_tool_outcome": None,
+        "pending_trip_change": None,
         "budget_gate_outcome": None,
         "budget_gate_reason": None,
         "budget_gate_message": None,

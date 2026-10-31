@@ -15,6 +15,7 @@ from app.orchestration.nodes.budget import (
 from app.orchestration.nodes.replies import BUDGET_CONFIRMATION_TEXT, BUDGET_UNAVAILABLE_TEXT
 from app.orchestration.tests.node_fakes import (
     CONFIG,
+    TRIP,
     FakeBudget,
     ScriptedReviewer,
     assessment,
@@ -160,6 +161,59 @@ def test_resume_reverifies_the_saved_assessment_then_plans():
     assert update["accepted_budget_decision"]["stage"] == ACCEPTED_STAGE_READY
     assert "candidate" not in update["accepted_budget_decision"]
     assert update["plan_overrides"]["total_base_budget"] == 5000.0
+
+
+def test_resume_keeps_a_trip_change_accepted_with_the_budget():
+    state = stored_acceptance().model_copy(update={"plan_overrides": {"num_people": 2, "total_base_budget": 5000.0}})
+    store = FakeBudget(saved=ASSESSMENT)
+
+    update = run(resume_accepted_budget_node(state, CONFIG, budget=store))
+
+    assert update["plan_overrides"]["num_people"] == 2
+    assert update["plan_overrides"]["total_base_budget"] == 5000.0
+
+
+def test_accepting_a_waiting_trip_change_carries_it_into_the_replan(monkeypatch):
+    korea = assessment(TRIP.model_copy(update={"destination": "Korea", "destination_city": "Seoul"}))
+    decision = ChatBudgetDecision(
+        status="accepted",
+        chat_reply="ok",
+        accepted_total_base_budget=5000.0,
+        assessment=BudgetAssessment.model_validate(korea),
+    )
+    calls = gate_returns(monkeypatch, decision)
+    state = committed_state(
+        pending_budget_proposal={"mode": "amount", "total_base_budget": 5000.0},
+        pending_trip_change={"updates": {"country": "Korea", "city": ["Seoul"]}, "total_base_budget": 600.0},
+        pending_budget_confirmation={"assessment": korea},
+        budget_gate_outcome="budget_confirmation_required",
+    )
+
+    update = run(assess_chat_budget_node(state, CONFIG, budget=FakeBudget()))
+
+    # Judged against the changed trip, not the published Tokyo one.
+    assert calls[0]["destination"] == "Korea" and calls[0]["destination_city"] == "Seoul"
+    assert calls[0]["current_assessment"] == BudgetAssessment.model_validate(korea).model_dump()
+    overrides = update["plan_overrides"]
+    assert overrides["country"] == "Korea" and overrides["city"] == ["Seoul"]
+    assert overrides["total_base_budget"] == 5000.0
+    assert update["pending_trip_change"] is None and update["pending_budget_confirmation"] is None
+
+
+def test_a_refused_waiting_change_stays_with_its_recommendation(monkeypatch):
+    gate_returns(monkeypatch, RuntimeError("down"))
+    waiting = {"updates": {"num_people": 2}, "total_base_budget": 600.0}
+    state = committed_state(
+        pending_budget_proposal={"mode": "amount", "total_base_budget": 5000.0},
+        pending_trip_change=waiting,
+        pending_budget_confirmation={"assessment": ASSESSMENT},
+    )
+
+    update = run(assess_chat_budget_node(state, CONFIG, budget=FakeBudget()))
+
+    assert update["budget_gate_outcome"] == "budget_check_unavailable"
+    # Not in the update: the waiting change is left as it was.
+    assert "pending_trip_change" not in update
 
 
 @pytest.mark.parametrize(

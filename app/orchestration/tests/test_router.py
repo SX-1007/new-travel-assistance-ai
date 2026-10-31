@@ -51,6 +51,15 @@ def test_post_tool_outcomes_map_to_nodes(outcome, node):
     assert router.route_after_post_tool(committed_state(post_tool_outcome=outcome)) == node
 
 
+@pytest.mark.parametrize(("outcome", "node"), [*router.TRIP_CHANGE_ROUTES.items(), (None, END)])
+def test_trip_change_outcomes_map_to_nodes(outcome, node):
+    assert router.route_after_trip_change(committed_state(post_tool_outcome=outcome)) == node
+
+
+def test_post_tool_can_no_longer_skip_the_trip_change_check():
+    assert "replan_full" not in router.POST_TOOL_ROUTES and "replan_itinerary" not in router.POST_TOOL_ROUTES
+
+
 def test_only_an_acceptance_with_financials_may_plan():
     assert router.route_after_budget(committed_state(budget_gate_outcome="accepted")) == "budget_gate_response"
     assert (

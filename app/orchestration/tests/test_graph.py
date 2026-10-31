@@ -7,16 +7,19 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
 
+from app.api.presenters.chat import chat_turn_response
+from app.modules.destination.exceptions import DestinationResolutionInvalid
 from app.modules.factual_qa.models import FactualDomain, FactualRoute, RequestType
 from app.modules.itinerary.tests.test_planning_end_to_end import _idea
 from app.orchestration.graph import GraphRuntime, compile_graph
 from app.orchestration.nodes import GraphServices, build_nodes
 from app.orchestration.nodes.agent import MAX_TOOL_ROUNDS, AgentModels, build_agent_toolset
-from app.orchestration.nodes.replies import CHANGE_NOT_SAVED
+from app.orchestration.nodes.replies import CHANGE_NOT_SAVED, DESTINATION_INVALID_TEXT, PLAN_KEPT_TEXT
 from app.orchestration.session_access import SessionAccessService
 from app.orchestration.tests.node_fakes import (
-    FakeBudget,
+    AssessingBudget,
     FakeCurrency,
+    FakeDestinations,
     FakeModel,
     Network,
     assessment,
@@ -74,14 +77,16 @@ class ChatOnlyFactual:
 
 
 class App:
-    def __init__(self, *, agent=(), writer=None):
+    def __init__(self, *, agent=(), writer=None, budget=None, budget_model=None, destinations=None, currency=None):
         self.network = Network()
         self.agent = FakeModel(*agent)
         self.writer = writer or FakeModel(*["Here is your Tokyo trip with Senso-ji and Tokyo Tower."] * 6)
         self.store = OwnershipStore()
+        self.budget = budget or AssessingBudget()
+        self.destinations = destinations or FakeDestinations()
         replies, self.semantic = reply_services(writer=self.writer)
         loader, _ = profiles()
-        planning = self.network.planning(budget=FakeBudget(), currency=FakeCurrency())
+        planning = self.network.planning(budget=self.budget, currency=currency or FakeCurrency())
         toolset = build_agent_toolset(
             booking=planning.booking,
             place_search=self.network.edits().place_search,
@@ -91,10 +96,11 @@ class App:
         services = GraphServices(
             planning=planning,
             replies=replies,
-            models=AgentModels(agent=self.agent, edit=FakeModel(), budget=FakeModel()),
+            models=AgentModels(agent=self.agent, edit=FakeModel(), budget=budget_model or FakeModel()),
             edits=self.network.edits(),
             profiles=loader,
             factual=ChatOnlyFactual(),
+            destinations=self.destinations,
         )
         self.saver = MemorySaver()
         self.runtime = GraphRuntime(
@@ -117,8 +123,8 @@ class App:
         }
         return asyncio.run(self.runtime.invoke_new_trip(initial, thread_id=thread, user_id=user))
 
-    def chat(self, message, thread="trip-1", user="user-1"):
-        return asyncio.run(self.runtime.invoke_chat(message, thread_id=thread, user_id=user))
+    def chat(self, message, thread="trip-1", user="user-1", **budget):
+        return asyncio.run(self.runtime.invoke_chat(message, thread_id=thread, user_id=user, **budget))
 
 
 def edit_call(*edits):
@@ -165,7 +171,8 @@ def test_a_date_change_is_replanned_and_published_with_the_plan():
 
 
 def test_a_failed_replan_leaves_the_published_requirements_alone():
-    # Tokyo can't be planned as a Korea trip: the transaction fails.
+    # The fake world has flights and places for Tokyo only: the Seoul
+    # transaction fails.
     app = App(agent=[tool_call("update_trip_details", country="Korea")])
     app.new_trip()
 
@@ -219,3 +226,112 @@ def test_sessions_are_private_to_their_owner():
     # An existing id can't be planned over, not even by its owner.
     with pytest.raises(SessionAccessDenied):
         app.new_trip()
+
+
+# ── Trip changes are checked like a new trip (B5, B6) ───────────────
+
+
+def card_for(result):
+    response = chat_turn_response(result)
+    assert response.status == "budget_confirmation_required", response
+    return response.budget_confirmation, response.chat_reply
+
+
+def four_day_app(**kwargs):
+    # Minimum MYR 800 (8 x 1000 / 10) for every trip: above the MYR 600 budget.
+    app = App(budget=AssessingBudget(flight_price=1000.0), **kwargs)
+    app.new_trip()
+    app.network.ideas.initial.append(_idea("Ueno Park", 4, 1))
+    return app
+
+
+def test_a_change_the_budget_cannot_cover_waits_for_the_recommendation_then_plans():
+    app = four_day_app(agent=[tool_call("update_trip_details", end_date="2026-11-04")])
+
+    result = app.chat("make it four days")
+
+    assert not result.plan_changed
+    assert result.state["end_date"] == "2026-11-03" and result.state["plan_revision"] == 1
+    card, reply = card_for(result)
+    assert card.recommended_minimum_budget == 800.0 and card.stated_budget == 600.0
+    assert reply.startswith("For the changed trip (Tokyo), MYR 600.00 is below")
+    assert "keep your current trip" in reply
+
+    result = app.chat(
+        "Use the recommended budget",
+        budget_action="accept_recommended",
+        budget_assessment_id=card.budget_assessment_id,
+    )
+
+    assert result.plan_changed
+    state = result.state
+    assert state["end_date"] == "2026-11-04" and state["total_base_budget"] == 800.0
+    assert state["plan_revision"] == 2 and [day["day"] for day in state["draft_itinerary"]] == [1, 2, 3, 4]
+    assert state["budget_assessment"]["end_date"] == "2026-11-04"
+    assert state["pending_trip_change"] is None and state["pending_budget_confirmation"] is None
+
+
+def test_another_amount_for_a_waiting_change_is_judged_against_the_changed_trip():
+    app = four_day_app(
+        agent=[tool_call("update_trip_details", end_date="2026-11-04")],
+        budget_model=FakeModel(tool_call("propose_budget_change", amount=900, currency="MYR")),
+    )
+    app.chat("make it four days")
+
+    state = app.chat("make it 900").state
+
+    assert state["end_date"] == "2026-11-04" and state["total_base_budget"] == 900.0
+    assert state["plan_revision"] == 2 and state["pending_trip_change"] is None
+
+
+def test_keeping_the_current_trip_drops_the_waiting_change_and_unlocks_the_chat():
+    app = four_day_app(
+        agent=[tool_call("update_trip_details", end_date="2026-11-04"), "Day 2 has Tokyo Tower."],
+        writer=FakeModel("Here is your Tokyo trip.", "Day 2 has Tokyo Tower."),
+        budget_model=FakeModel(tool_call("keep_current_plan")),
+    )
+    app.chat("make it four days")
+
+    result = app.chat("no, keep my trip as it is")
+
+    state = result.state
+    assert not result.plan_changed
+    assert state["messages"][-1].content == PLAN_KEPT_TEXT
+    assert state["end_date"] == "2026-11-03" and state["total_base_budget"] == 600.0
+    assert state["pending_trip_change"] is None and state["pending_budget_confirmation"] is None
+    assert chat_turn_response(result).status == "success"
+
+    # No recommendation is pending any more: an ordinary turn runs.
+    assert app.chat("what's on day 2?").state["messages"][-1].content == "Day 2 has Tokyo Tower."
+
+
+def test_a_new_origin_is_judged_in_its_own_currency():
+    app = App(
+        agent=[tool_call("update_trip_details", origin_country="Singapore")],
+        budget=AssessingBudget(flight_price=1000.0),
+        currency=FakeCurrency(rates={("MYR", "SGD"): 0.3}),
+    )
+    app.new_trip()
+
+    result = app.chat("I'm flying from Singapore now")
+
+    card, reply = card_for(result)
+    # MYR 600 is SGD 180: the card never shows "SGD 600".
+    assert card.base_currency == "SGD" and card.stated_budget == 180.0
+    assert reply.startswith("For the changed trip (Tokyo), SGD 180.00 is below")
+    assert result.state["origin_country"] == "Malaysia" and result.state["base_currency_code"] == "MYR"
+
+
+def test_an_unverifiable_destination_is_refused_and_the_plan_kept():
+    app = App(
+        agent=[tool_call("update_trip_details", city=["Paris"])],
+        destinations=FakeDestinations(error=DestinationResolutionInvalid("'Paris' could not be verified inside Japan.")),
+    )
+    app.new_trip()
+
+    result = app.chat("move it to Paris")
+
+    response = chat_turn_response(result)
+    assert response.status == "success" and response.chat_reply == DESTINATION_INVALID_TEXT
+    assert response.itinerary_modified is False and response.draft_itinerary
+    assert result.state["city"] == ["Tokyo"] and result.state["plan_revision"] == 1

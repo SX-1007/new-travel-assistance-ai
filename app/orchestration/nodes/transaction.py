@@ -96,6 +96,7 @@ def finished_transaction() -> dict[str, Any]:
         "accepted_budget_decision": None,
         "pending_budget_proposal": None,
         "pending_budget_confirmation": None,
+        "pending_trip_change": None,
         "pending_itinerary_mutation": None,
         "budget_gate_outcome": None,
         "budget_gate_reason": None,

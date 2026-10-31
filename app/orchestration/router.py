@@ -27,10 +27,18 @@ StartRoute = Literal[
 ]
 
 POST_TOOL_ROUTES: Final[dict[str, str]] = {
-    "replan_full": "process_initial_form",
-    "replan_itinerary": "prepare_planning_transaction",
+    # A trip change is checked like a new trip before any replan.
+    "check_trip_change": "check_trip_change",
     "review_candidate": "generate_reviewed_response",
     "assess_budget": "assess_chat_budget",
+    "budget_gate": "budget_gate_response",
+    "reply_sent": END,
+    "agent": "agent",
+}
+
+TRIP_CHANGE_ROUTES: Final[dict[str, str]] = {
+    "replan_full": "process_initial_form",
+    "replan_itinerary": "prepare_planning_transaction",
     "budget_gate": "budget_gate_response",
     "reply_sent": END,
     "agent": "agent",
@@ -88,6 +96,11 @@ def route_after_post_tool(state: AgentState) -> str:
     return POST_TOOL_ROUTES.get(state.post_tool_outcome or "agent", "agent")
 
 
+def route_after_trip_change(state: AgentState) -> str:
+    # The check always records an outcome; without one, nothing is planned.
+    return TRIP_CHANGE_ROUTES.get(state.post_tool_outcome or "reply_sent", END)
+
+
 def route_after_budget(
     state: AgentState,
 ) -> Literal["execute_validated_transaction", "budget_gate_response"]:
@@ -109,6 +122,7 @@ def _wants_tools(state: AgentState) -> bool:
 
 __all__ = [
     "POST_TOOL_ROUTES",
+    "TRIP_CHANGE_ROUTES",
     "route_after_agent",
     "route_after_budget",
     "route_after_budget_decision",
@@ -116,5 +130,6 @@ __all__ = [
     "route_after_factual_router",
     "route_after_post_tool",
     "route_after_review",
+    "route_after_trip_change",
     "route_start",
 ]

@@ -4,16 +4,19 @@
 (each result bound to the call that produced it) and records its decision in
 ``post_tool_outcome`` for the router:
 
-1. Budget tools win: one coherent proposal goes to the gate
-   (``assess_budget``); malformed or conflicting ones fail closed
-   (``budget_gate``). While a recommendation is pending, other tools are
-   ignored.
-2. Trip-detail changes go into ``plan_overrides`` and trigger a replan
-   (``replan_full`` for a new destination or origin, else
-   ``replan_itinerary``). Edits in the same batch are dropped.
-3. Itinerary edits and category budgets become a validated private
+1. Budget tools first: keeping the current plan drops a pending
+   recommendation (``reply_sent``); malformed or conflicting results fail
+   closed (``budget_gate``). While a recommendation is pending, other tools
+   are ignored.
+2. Trip-detail changes go into ``plan_overrides`` and are checked like a new
+   trip before any replan (``check_trip_change``). A budget proposed in the
+   same batch travels with them, so it is judged against the new trip.
+   Edits in the same batch are dropped.
+3. Otherwise one coherent budget proposal goes to the gate
+   (``assess_budget``).
+4. Itinerary edits and category budgets become a validated private
    candidate (``review_candidate``), or a fixed reply (``reply_sent``).
-4. Anything else returns to the agent.
+5. Anything else returns to the agent.
 """
 
 from __future__ import annotations
@@ -49,9 +52,11 @@ from app.orchestration.nodes.replies import (
     EDIT_FAILED_VALIDATION,
     EDIT_NOT_APPLICABLE,
     EDIT_REJECTED,
+    PLAN_KEPT,
+    PLAN_KEPT_TEXT,
     server_reply,
 )
-from app.orchestration.nodes.transaction import planning_reset
+from app.orchestration.nodes.transaction import finished_transaction, planning_reset
 from app.orchestration.planning_requirements import build_trip_requirements
 from app.orchestration.state import AgentState
 from app.orchestration.tools.trip import validated_trip_updates
@@ -60,8 +65,7 @@ from app.shared.observability import LogContext, log_event
 
 logger = logging.getLogger(__name__)
 
-_BUDGET_TOOLS: Final = frozenset({"propose_budget_change", "confirm_recommended_budget"})
-_FULL_REPLAN_FIELDS: Final = frozenset({"country", "origin_country"})
+_BUDGET_TOOLS: Final = frozenset({"propose_budget_change", "confirm_recommended_budget", "keep_current_plan"})
 # Server-side place lookups per batch when the model skipped search_places.
 _MAX_PLACE_RECOVERIES: Final = 3
 # Cent rounding across six categories.
@@ -91,16 +95,10 @@ async def post_tool_processing_node(
 
     status, proposal = resolve_budget_batch(batch)
 
-    if status == "coherent":
-        return {
-            "pending_budget_proposal": proposal,
-            "budget_gate_outcome": None,
-            "budget_gate_reason": None,
-            "budget_gate_message": None,
-            "post_tool_outcome": "assess_budget",
-        }
+    if status == "coherent" and proposal is not None and proposal["mode"] == "decline":
+        return _plan_kept(state, edits.reviewer, log_context)
 
-    if status != "absent":
+    if status not in {"absent", "coherent"}:
         _log(log_context, "budget_tools", "rejected", status)
         return {
             "pending_budget_proposal": None,
@@ -112,19 +110,35 @@ async def post_tool_processing_node(
             "post_tool_outcome": "budget_gate",
         }
 
-    # While a recommendation is pending, only the restricted interpreter may
-    # decide; any other tool output is ignored.
-    if budget_decision_pending(state):
-        return {"post_tool_outcome": "budget_gate"}
-
-    changes = _trip_changes(state, batch)
+    pending = budget_decision_pending(state)
+    changes = {} if pending else _trip_changes(state, batch)
 
     if changes:
+        # "Go to Paris instead, with 15000": the amount belongs to the new
+        # trip, so it is judged there, never against the current one.
         return {
             **planning_reset(),
             "plan_overrides": changes,
-            "post_tool_outcome": "replan_full" if changes.keys() & _FULL_REPLAN_FIELDS else "replan_itinerary",
+            "pending_budget_proposal": proposal,
+            "budget_gate_outcome": None,
+            "budget_gate_reason": None,
+            "budget_gate_message": None,
+            "post_tool_outcome": "check_trip_change",
         }
+
+    if status == "coherent":
+        return {
+            "pending_budget_proposal": proposal,
+            "budget_gate_outcome": None,
+            "budget_gate_reason": None,
+            "budget_gate_message": None,
+            "post_tool_outcome": "assess_budget",
+        }
+
+    # While a recommendation is pending, only the restricted interpreter may
+    # decide; any other tool output is ignored.
+    if pending:
+        return {"post_tool_outcome": "budget_gate"}
 
     requested_edits = [
         edit
@@ -172,11 +186,28 @@ def _budget_proposal(name: str, result: Any) -> dict[str, Any] | None:
     if name == "confirm_recommended_budget":
         return {"mode": "confirm", "total_base_budget": None} if mode == "confirm" else None
 
+    if name == "keep_current_plan":
+        return {"mode": "decline", "total_base_budget": None} if mode == "decline" else None
+
     if mode == "recommendation":
         return {"mode": "recommendation", "total_base_budget": None}
 
     amount = finite_positive(proposal.get("total_base_budget")) if mode == "amount" else None
     return {"mode": "amount", "total_base_budget": amount} if amount is not None else None
+
+
+def _plan_kept(state: AgentState, reviewer: OutputReviewService, log_context: LogContext) -> dict[str, Any]:
+    """The user declined the recommendation: drop it, and any trip change
+    waiting on it, and keep the published plan."""
+
+    _log(log_context, "budget_tools", "declined")
+
+    return {
+        "messages": [server_reply(state, PLAN_KEPT_TEXT, marker=PLAN_KEPT, reviewer=reviewer, log_context=log_context)],
+        **planning_reset(),
+        **finished_transaction(),
+        "post_tool_outcome": "reply_sent",
+    }
 
 
 # ── Requirements and allocation ─────────────────────────────────────

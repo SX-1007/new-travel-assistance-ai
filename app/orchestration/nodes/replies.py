@@ -49,6 +49,8 @@ MUTATION_MODEL_UNAVAILABLE: Final = "mutation_model_unavailable"
 MUTATION_TARGET_REQUIRED: Final = "mutation_target_required"
 BUDGET_DECISION_UNAVAILABLE: Final = "budget_decision_unavailable"
 BUDGET_GATE: Final = "budget_gate"
+TRIP_CHANGE_REJECTED: Final = "trip_change_rejected"
+PLAN_KEPT: Final = "plan_kept"
 
 
 # ── Fixed texts ─────────────────────────────────────────────────────
@@ -116,6 +118,25 @@ BUDGET_CONFIRMATION_TEXT: Final = (
 BUDGET_UNAVAILABLE_TEXT: Final = (
     "Unable to verify the budget right now. Your existing trip plan has not "
     "been changed."
+)
+PLAN_KEPT_TEXT: Final = (
+    "Okay, I've kept your current trip and budget exactly as they were."
+)
+ORIGIN_INVALID_TEXT: Final = (
+    "I couldn't recognise that departure country, so your trip has not been "
+    "changed. Please tell me the country you will be travelling from."
+)
+DESTINATION_INVALID_TEXT: Final = (
+    "I couldn't verify that destination inside the country, so your trip has "
+    "not been changed. Please check the country and city names and try again."
+)
+DESTINATION_UNAVAILABLE_TEXT: Final = (
+    "I couldn't verify the new destination right now, so your trip has not "
+    "been changed. Please try again in a moment."
+)
+CURRENCY_UNAVAILABLE_TEXT: Final = (
+    "I couldn't convert your budget to the new home currency right now, so "
+    "your trip has not been changed. Please try again in a moment."
 )
 
 # Instruction appended when the model writes the reply for a qualified plan.
@@ -325,6 +346,8 @@ __all__ = [
     "MUTATION_MODEL_UNAVAILABLE",
     "MUTATION_TARGET_REQUIRED",
     "PLANNING_UNAVAILABLE",
+    "PLAN_KEPT",
+    "TRIP_CHANGE_REJECTED",
     "PLAN_INSTRUCTIONS",
     "plan_instruction",
     "QUALIFIED_FALLBACKS",
