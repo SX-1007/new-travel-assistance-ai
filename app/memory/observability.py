@@ -24,6 +24,7 @@ _MEMORY_EVENT_LEVELS: Final[Mapping[str, int]] = MappingProxyType(
         "memory.extractor.retry": logging.WARNING,
         "memory.extractor.started": logging.INFO,
         "memory.extractor.no_traits": logging.INFO,
+        "memory.extractor.home_country_rejected": logging.WARNING,
         "memory.extractor.relational_queued": logging.INFO,
         "memory.extractor.vector_queued": logging.INFO,
         "memory.extractor.persistence_succeeded": logging.INFO,

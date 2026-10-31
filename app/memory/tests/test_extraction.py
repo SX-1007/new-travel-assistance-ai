@@ -75,3 +75,61 @@ def test_traits_are_routed_to_both_stores():
         {"home_country": "Malaysia", "dietary_restrictions": ["User is vegan."]}
     ]
     assert service.vector == [{"dietary": ["User is vegan."]}]
+
+
+def _run(memory, service):
+    return run_memory_extraction_task(
+        "user-1",
+        "message",
+        chain=FakeChain([memory]),
+        memory_service=service,
+    )
+
+
+@pytest.mark.parametrize("country", ["Malaysia", "MY", "MYS", "UK", "  Japan  "])
+def test_recognised_home_country_is_saved(country):
+    service = FakeMemoryService()
+
+    result = _run(LongTermMemory(home_country=country, home_state="Selangor"), service)
+
+    assert result == {"memory_updated": True}
+    assert service.relational == [
+        {"home_country": country.strip(), "home_state": "Selangor"}
+    ]
+
+
+@pytest.mark.parametrize("country", ["Narnia", "Mars", "Malasia", "   "])
+def test_unknown_home_country_is_not_saved(country):
+    service = FakeMemoryService()
+
+    result = _run(LongTermMemory(home_country=country), service)
+
+    assert result == {"memory_updated": False}
+    assert service.relational == []
+    assert service.vector == []
+
+
+def test_unknown_home_country_drops_its_state_but_keeps_other_traits(caplog):
+    service = FakeMemoryService()
+    memory = LongTermMemory(
+        home_country="Narnia",
+        home_state="Lantern Waste",
+        travel_pacing="relaxed",
+    )
+
+    with caplog.at_level("WARNING"):
+        result = _run(memory, service)
+
+    assert result == {"memory_updated": True}
+    assert service.relational == [{"travel_pacing": "relaxed"}]
+    assert service.vector == [{"travel_pacing": ["relaxed"]}]
+    assert "memory.extractor.home_country_rejected" in caplog.text
+    assert "Narnia" not in caplog.text
+
+
+def test_state_without_a_country_is_still_saved():
+    service = FakeMemoryService()
+
+    _run(LongTermMemory(home_state="  Selangor "), service)
+
+    assert service.relational == [{"home_state": "Selangor"}]
