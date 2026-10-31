@@ -185,12 +185,19 @@ class GeminiIataResolver:
             # A model failure may be temporary: don't cache it.
             return None
 
+        # The chain returns None when the model answers without the
+        # structured-output tool; treat that like an invalid code.
         iata_code = (
             normalise_iata_code(
-                result.iata_code
+                getattr(
+                    result,
+                    "iata_code",
+                    None,
+                )
             )
         )
 
+        # Not cached: a bad answer may be one-off.
         if iata_code is None:
             safe_log(
                 logger,
