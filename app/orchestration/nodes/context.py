@@ -1,9 +1,9 @@
 """Per-request context the graph nodes share: who is asking and their profile.
 
-The old graph fetched the long-term profile (a Supabase read plus a pgvector
-query) separately in the agent, planning and reply nodes, and again on every
-pass of the agent ↔ tools loop. ``ProfileLoader`` fetches it once per short
-window and is invalidated when memory extraction saves something new.
+The agent, planning and reply nodes all need the long-term profile (a
+database read plus a vector query), and the agent ↔ tools loop asks for it on
+every pass. ``ProfileLoader`` fetches it once per short window and is
+invalidated when memory extraction saves something new.
 """
 
 from __future__ import annotations

@@ -1,10 +1,7 @@
-"""
-Application configuration — loaded from environment / .env file.
+"""Application settings from the environment and ``.env``.
 
-Uses Pydantic BaseSettings for:
-  • Type validation at startup (fail-fast)
-  • Automatic .env loading
-  • Computed fallback properties for optional Gemini sub-keys
+Validated on first use: a missing required value stops the app at startup
+rather than failing a request later.
 """
 
 from __future__ import annotations
@@ -37,6 +34,8 @@ class Settings(BaseSettings):
     # Backup key: every task falls back to it, on the same model, when its
     # own key fails (outage, exhausted quota, malformed answer).
     GEMINI_API_KEY_2: str = ""
+    # Optional per-task keys; each falls back to GEMINI_API_KEY (see the
+    # ``effective_*`` properties below).
     GEMINI_IATA_API: str = ""
     GEMINI_FLIGHTS_HOTELS: str = ""
     GEMINI_EXTRACTOR_API: str = ""
@@ -44,7 +43,7 @@ class Settings(BaseSettings):
     GEMINI_DESTINATION_API: str = ""
     GEMINI_ACTIVITIES_API: str = ""
 
-    # ------------------- Model Configuration ------------------
+    # ── Models ───────────────────────────────────────────────────────
     GEMINI_CHAT_MODEL: str = "gemini-3.1-flash-lite"
     GEMINI_UTILITY_MODEL: str = "gemini-3.1-flash-lite"
     GEMINI_EMBED_MODEL: str = "gemini-embedding-2"
@@ -79,15 +78,13 @@ class Settings(BaseSettings):
     SERPAPI_FLIGHT: str = Field(..., min_length=1)
     SERPAPI_HOTEL: str = Field(..., min_length=1)
     SERPAPI_PLACE: str = Field(..., min_length=1)
-    # Optional dedicated key for factual web retrieval. Falls back to the
-    # existing SerpAPI place key so current deployments keep working.
+    # Optional key for factual web search; falls back to SERPAPI_PLACE.
     SERPAPI_FACTUAL: str = ""
     FREECURRENCY_API: str = Field(..., min_length=1)
 
-    # ── Computed helpers (fallback to primary Gemini key) ────────────
+    # ── Effective keys: a task's own key, else the fallback ──────────
     @property
     def effective_embed_api_key(self) -> str:
-        """Embedding API key — falls back to primary Gemini key."""
         return self.GEMINI_EMBED_API or self.GEMINI_API_KEY
 
     @property
@@ -98,11 +95,7 @@ class Settings(BaseSettings):
     def effective_iata_api_key(
         self,
     ) -> str:
-        """
-        Dedicated IATA resolver key with
-        booking/primary fallback.
-        """
-
+        """IATA key, else the flights/hotels key, else the primary key."""
         return (
             self.GEMINI_IATA_API
             or self.effective_flights_hotels_api_key
@@ -110,12 +103,10 @@ class Settings(BaseSettings):
 
     @property
     def effective_destination_api_key(self) -> str:
-        """Primary-city selection key — falls back to primary Gemini key."""
         return self.GEMINI_DESTINATION_API or self.GEMINI_API_KEY
 
     @property
     def effective_activities_api_key(self) -> str:
-        """Activity-idea generation key — falls back to primary Gemini key."""
         return self.GEMINI_ACTIVITIES_API or self.GEMINI_API_KEY
 
     @property
@@ -124,7 +115,6 @@ class Settings(BaseSettings):
 
     @property
     def effective_factual_serpapi_key(self) -> str:
-        """Dedicated factual-search key, falling back to the existing place key."""
         return self.SERPAPI_FACTUAL or self.SERPAPI_PLACE
 
 

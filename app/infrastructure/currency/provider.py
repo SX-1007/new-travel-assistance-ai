@@ -45,6 +45,8 @@ _FALLBACK_RATE_URL: Final = (
 )
 
 
+# Retries connection problems, rate limits and server errors on GET,
+# honouring Retry-After.
 _RETRY_STRATEGY = Retry(
     total=3,
     connect=3,
@@ -131,10 +133,9 @@ def _valid_rate(
 
 
 class CurrencyProvider:
-    """
-    Thread-safe cached adapter over the configured
-    currency providers.
-    """
+    """Country → currency code, and exchange rates: freecurrencyapi first,
+    open.er-api.com (no key) as the fallback. Thread-safe; countries are
+    cached for a day, rates for an hour."""
 
     def __init__(
         self,
@@ -189,13 +190,10 @@ class CurrencyProvider:
         self,
         country: str,
     ) -> str:
-        """
-        Resolve a country name to its current
-        primary ISO-4217 currency code.
+        """The country's main currency (ISO 4217).
 
-        Resolution failures are explicit. Returning
-        USD for an unknown country could silently
-        corrupt downstream budget calculations.
+        Raises instead of guessing: a USD default for an unknown country
+        would silently skew every budget figure.
         """
 
         normalised_country = " ".join(
@@ -281,10 +279,8 @@ class CurrencyProvider:
         origin_curr_code: str,
         des_curr_code: str,
     ) -> float:
-        """
-        Return a positive FX rate or raise
-        CurrencyRateUnavailableError.
-        """
+        """Units of ``des_curr_code`` per one ``origin_curr_code``. Raises
+        ``CurrencyRateUnavailableError`` when neither provider answers."""
 
         origin = _normalise_currency_code(
             origin_curr_code,
@@ -383,6 +379,7 @@ class CurrencyProvider:
         destination: str,
         rate: float,
     ) -> None:
+        # The inverse too, so converting back needs no request.
         with self._rate_lock:
             self._rate_cache[
                 (

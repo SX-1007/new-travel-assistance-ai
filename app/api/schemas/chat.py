@@ -1,7 +1,7 @@
 """HTTP transport schemas for chat turns and restored chat history.
 
-The frontend checks every response key strictly, so these shapes are the
-old wire format exactly (``extra="forbid"`` everywhere).
+The frontend checks every response key strictly, so these shapes must match
+what it expects exactly (``extra="forbid"`` everywhere).
 """
 
 from __future__ import annotations

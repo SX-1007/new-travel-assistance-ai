@@ -100,8 +100,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 # ──────────────────────────────────────────────────────────── App factory
 def create_app() -> FastAPI:
-    """Create and configure the FastAPI application."""
-
     app = FastAPI(
         title="Travel Assistant AI",
         description="Backend for self-adaptive travel planning agent",

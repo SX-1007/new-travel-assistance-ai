@@ -1,7 +1,11 @@
 """Durable PostgreSQL persistence for trip-session ownership.
 
-This module contains database concerns only. It does not know about LangGraph,
-FastAPI, request objects, or orchestration policy.
+A row ties a session id to its user. A new trip first reserves the id
+(``initializing``); once its first checkpoint is saved the row becomes
+``ready``, and only ready rows grant access. An ``initializing`` row whose
+lease expired (its request died) can be reclaimed by the same user.
+
+Database concerns only: no LangGraph, FastAPI or access policy here.
 """
 
 from __future__ import annotations
@@ -21,6 +25,7 @@ CREATE TABLE IF NOT EXISTS trip_session_owners (
 )
 """
 
+# Serialises table creation across processes (each table has its own lock id).
 _RESERVATION_SCHEMA_LOCK_SQL: Final[str] = (
     "SELECT pg_advisory_xact_lock(794523017)"
 )
@@ -158,7 +163,8 @@ class SessionOwnershipRepository:
                     )
 
     def backfill(self, session_id: str, user_id: str) -> bool:
-        """Persist ownership for a legacy checkpoint already verified elsewhere."""
+        """Record ownership for a session that has checkpoints but no row (saved
+        before ownership rows existed), after the caller verified the owner."""
         self._ensure_schema()
 
         with get_connection() as connection:

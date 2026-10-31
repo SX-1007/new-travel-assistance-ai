@@ -1,8 +1,8 @@
 """Prompts for the main travel agent and the pending-budget decision.
 
-The system prompt states behaviour and tool *policy*. Tool signatures are
-not repeated here: the bound tools already send their own schemas, and the
-old hand-written copies had drifted from the real tools.
+The system prompt states behaviour and tool *policy*. Tool signatures are not
+repeated here: the bound tools already send their own schemas, and a
+hand-written copy would drift from them.
 """
 
 from __future__ import annotations
@@ -266,7 +266,7 @@ def prompt_variables(
         "num_people": str(state.num_people or 1),
         "start_date": state.start_date or "TBD",
         "end_date": state.end_date or "TBD",
-        # The old prompt showed "USD" when a currency was missing.
+        # "Not set", never a guessed currency such as USD.
         "base_currency_code": plan.value("base_currency_code") or _NOT_SET,
         "dest_currency_code": plan.value("dest_currency_code") or _NOT_SET,
         "exchange_rate": format_exchange_rate(plan.value("exchange_rate")),
@@ -331,7 +331,7 @@ def model_context(messages: Sequence[BaseMessage]) -> list[BaseMessage]:
       text ("[Called tool(s): …]") the model copied the format and wrote
       later calls as prose, so a requested edit was never executed.
     * Tool results lose images and map geometry; earlier turns' results are
-      also truncated. They used to be replayed in full on every turn.
+      also truncated, so a long session doesn't resend every result in full.
     """
 
     window = _window(messages)
@@ -404,7 +404,8 @@ class _PlanView:
 
     While a validated candidate awaits its reply, the candidate (and any
     accepted-budget financials on it) is the plan. Otherwise the accepted
-    snapshot is, with live state as a fallback for legacy sessions.
+    snapshot is, with live state as a fallback for sessions saved by earlier
+    versions.
     """
 
     def __init__(self, state: AgentState) -> None:

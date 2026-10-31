@@ -2,10 +2,8 @@
 
 Flights come from real schedules: an overnight outbound flight can land
 after midnight on day 2, and a cheap return flight can leave at 02:15 on the
-last day. The old planner put a full day of places on both boundary days
-regardless (found by the live smoke test: Senso-ji on a day the traveller
-was still in Kuala Lumpur, four Tokyo places on a day whose flight left at
-02:15).
+last day. Planning a full day of places on such a day would send the
+traveller to places while they are still in the air or at home.
 
 A day's window is 08:00-22:00 local time, starting no earlier than an hour
 and a half after landing (immigration, transfer) and ending three hours

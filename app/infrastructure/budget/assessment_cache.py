@@ -1,7 +1,7 @@
 """Budget-assessment cache adapter over the generic Firestore cache store.
 
-Binds the collection and prefix the old application used, so assessments
-already cached in Firestore keep working after the migration.
+The collection and prefix must not change: assessments already in Firestore
+are stored under them.
 """
 
 from __future__ import annotations

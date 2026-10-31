@@ -47,12 +47,14 @@ class _SearchCache(Protocol):
     ) -> bool: ...
 
 
-# New namespace avoids mixing newly validated entries with the legacy format.
+# Versioned: change it when the cached shape or its checks change, so older
+# entries are never read.
 _CACHE_NAMESPACE = "hotel_v2"
 
 
 class SerpApiHotelProvider:
-    """Return verified, normalized hotels without LangGraph or AgentState."""
+    """Google Hotels search through SerpAPI. Every hotel's location is
+    verified to be in the requested city and country, cached ones included."""
 
     def __init__(
         self,
@@ -212,6 +214,9 @@ def _finite_number(value: Any, *, min_value: float = 0.0) -> float | None:
 
 
 def _extract_rate(value: Any) -> float | None:
+    """The nightly rate: SerpAPI's parsed number, else the one unambiguous
+    number in its display text (such as "$1,234"), else None."""
+
     if not isinstance(value, Mapping):
         return None
 
@@ -264,6 +269,9 @@ def _extract_rate(value: Any) -> float | None:
 
 
 def _safe_http_url(value: Any) -> str | None:
+    """``value`` if it is a plain http(s) URL (a host, no credentials, no
+    control characters), else None."""
+
     if not isinstance(value, str):
         return None
 
@@ -312,6 +320,10 @@ def _nonnegative_int(value: Any) -> int | None:
 
 
 def _parse_hotel_property(value: Any, *, destination: str) -> HotelResult | None:
+    """One SerpAPI property, or None without a nightly rate, a name or valid
+    coordinates. An impossible star class or rating is dropped, not trusted, and
+    links must be plain http(s).
+    """
     if not isinstance(value, Mapping):
         return None
     rate = _extract_rate(value.get("rate_per_night"))
@@ -375,6 +387,8 @@ def _resolve_country_code(
     destination: str,
     override: str | None,
 ) -> str | None:
+    """The given country, else the part after the last comma ("Tokyo, Japan")."""
+
     if override is None:
         return country_alpha2(destination.rsplit(",", 1)[-1])
     if isinstance(override, str):

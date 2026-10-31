@@ -8,9 +8,8 @@ No session id is created and no graph node runs until the entered budget
 covers the provider-grounded minimum. A confirmation round trip must echo
 the cities and assessment id from the previous response.
 
-The old router did all of this inline in the HTTP handler. A profile-store
-outage there read as an empty profile, so the user was told to redo
-onboarding; it now raises ``ProfileUnavailable`` (503).
+A profile-store outage raises ``ProfileUnavailable`` (503); it is never read
+as an empty profile, which would wrongly send the user back to onboarding.
 """
 
 from __future__ import annotations

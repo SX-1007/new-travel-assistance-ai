@@ -51,8 +51,7 @@ def test_a_valid_pending_recommendation_renders_the_confirmation_card():
     assert response.status == "budget_confirmation_required"
     card = response.budget_confirmation
     assert card.resolved_cities == ["Tokyo"] and card.stated_budget == 10.0
-    # The card's own text is filled (the old history left it empty, which
-    # the client rejects).
+    # The card's own text must be filled: the client rejects an empty one.
     assert card.chat_reply == response.chat_reply and "below the provider-grounded minimum" in card.chat_reply
 
 

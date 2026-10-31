@@ -7,6 +7,9 @@ It is the ONLY module that reads ``Settings``. Every infrastructure class
 receives its credentials through its constructor, so each one can be imported,
 replaced or tested on its own without a complete ``.env``. Getters are lazy:
 nothing is constructed until first requested.
+
+Each provider gets its own client and HTTP session (and, where configured,
+its own key), so a slow or failing feature can't hold up another one.
 """
 
 from __future__ import annotations
@@ -267,8 +270,6 @@ def _chat_backends(api_key: str, model: str) -> tuple[ChatBackend, ...]:
 
 @lru_cache(maxsize=1)
 def get_firestore_cache_store() -> FirestoreCacheStore:
-    """Return the shared Firestore TTL-cache store."""
-
     return FirestoreCacheStore(
         credential_json=_settings().FIREBASE_CREDENTIAL_JSON,
     )
@@ -276,14 +277,11 @@ def get_firestore_cache_store() -> FirestoreCacheStore:
 
 @lru_cache(maxsize=1)
 def get_user_profile_store() -> PostgresUserProfileStore:
-    """Return the relational user-profile store."""
-
     return PostgresUserProfileStore()
 
 
 @lru_cache(maxsize=1)
 def get_session_access_service() -> SessionAccessService:
-    """Return the configured session-access service."""
     repository = SessionOwnershipRepository()
 
     return SessionAccessService(
@@ -296,8 +294,6 @@ def get_session_access_service() -> SessionAccessService:
 
 @lru_cache(maxsize=1)
 def get_embedder() -> GeminiEmbedder:
-    """Return the shared Gemini embedding client."""
-
     settings = _settings()
 
     return GeminiEmbedder(
@@ -308,8 +304,6 @@ def get_embedder() -> GeminiEmbedder:
 
 @lru_cache(maxsize=1)
 def get_travel_option_store() -> PgVectorTravelOptionStore:
-    """Return the session-scoped travel-option vector store."""
-
     return PgVectorTravelOptionStore(
         embedder=get_embedder(),
     )
@@ -317,8 +311,6 @@ def get_travel_option_store() -> PgVectorTravelOptionStore:
 
 @lru_cache(maxsize=1)
 def get_semantic_preference_store() -> PgVectorSemanticPreferenceStore:
-    """Return the long-term semantic preference store."""
-
     return PgVectorSemanticPreferenceStore(
         embedder=get_embedder(),
     )
@@ -329,11 +321,6 @@ def get_semantic_preference_store() -> PgVectorSemanticPreferenceStore:
 
 @lru_cache(maxsize=1)
 def get_memory_service() -> MemoryService:
-    """
-    Construct long-term memory using independently
-    replaceable relational and semantic stores.
-    """
-
     return MemoryService(
         profile_store=get_user_profile_store(),
         semantic_store=get_semantic_preference_store(),
@@ -342,8 +329,6 @@ def get_memory_service() -> MemoryService:
 
 @lru_cache(maxsize=1)
 def get_memory_extraction_chain() -> Runnable:
-    """Return the long-term-memory extraction chain."""
-
     settings = _settings()
 
     return build_extraction_chain(
@@ -362,10 +347,6 @@ def get_memory_extraction_chain() -> Runnable:
 @lru_cache(maxsize=1)
 def get_currency_provider(
 ) -> CurrencyProvider:
-    """
-    Return the application currency provider.
-    """
-
     return CurrencyProvider(
         api_key=(
             _settings().FREECURRENCY_API
@@ -376,11 +357,6 @@ def get_currency_provider(
 @lru_cache(maxsize=1)
 def get_mapbox_reverse_geocoder(
 ) -> MapboxReverseGeocoder:
-    """
-    Return the application reverse-geocoding
-    provider.
-    """
-
     return MapboxReverseGeocoder(
         access_token=(
             _settings().MAPBOX_TOKEN
@@ -391,11 +367,7 @@ def get_mapbox_reverse_geocoder(
 @lru_cache(maxsize=1)
 def get_mapbox_forward_geocoder(
 ) -> MapboxForwardGeocoder:
-    """
-    Return the application forward-geocoding
-    provider (separate session and cache from
-    the reverse geocoder).
-    """
+    """Separate session and cache from the reverse geocoder."""
 
     return MapboxForwardGeocoder(
         access_token=(
@@ -407,10 +379,7 @@ def get_mapbox_forward_geocoder(
 @lru_cache(maxsize=1)
 def get_mapbox_directions_client(
 ) -> MapboxDirectionsClient:
-    """
-    Return the application route provider
-    (separate session from both geocoders).
-    """
+    """Separate session from both geocoders."""
 
     return MapboxDirectionsClient(
         access_token=(
@@ -422,8 +391,6 @@ def get_mapbox_directions_client(
 @lru_cache(maxsize=1)
 def get_flight_search_client(
 ) -> SerpApiClient:
-    """Return the independent flight SerpAPI client."""
-
     return SerpApiClient(
         api_key=_settings().SERPAPI_FLIGHT,
     )
@@ -431,24 +398,17 @@ def get_flight_search_client(
 
 @lru_cache(maxsize=1)
 def get_hotel_search_client() -> SerpApiClient:
-    """Dedicated hotel SerpAPI client and credential."""
     return SerpApiClient(api_key=_settings().SERPAPI_HOTEL)
 
 
 @lru_cache(maxsize=1)
 def get_place_search_client() -> SerpApiClient:
-    """Dedicated Google Maps place SerpAPI client and credential."""
     return SerpApiClient(api_key=_settings().SERPAPI_PLACE)
 
 
 @lru_cache(maxsize=1)
 def get_flight_search_provider(
 ) -> FlightSearchPort:
-    """
-    Return the configured independent
-    flight-search provider.
-    """
-
     settings = _settings()
 
     return SerpApiFlightProvider(
@@ -481,8 +441,6 @@ def get_hotel_search_provider() -> HotelSearchPort:
 
 @lru_cache(maxsize=1)
 def get_destination_city_picker() -> GeminiPrimaryCityPicker:
-    """Return the Gemini primary-city picker for country-only trips."""
-
     settings = _settings()
 
     return GeminiPrimaryCityPicker(
@@ -937,6 +895,8 @@ async def shutdown_graph() -> None:
         await pool.close()
 
 
+# Every cached getter, dependents before what they use. A new getter must be
+# added here, or shutdown won't release it.
 _ALL_GETTERS = (
     get_gemini_rate_limiter,
     get_openrouter_rate_limiter,
@@ -991,10 +951,8 @@ _ALL_GETTERS = (
 
 
 def shutdown_container() -> None:
-    """
-    Release initialized infrastructure clients
-    independently, without creating unused clients.
-    """
+    """Close the clients that exist (never creating one just to close it),
+    then clear every cache and close the Postgres pool."""
 
     closable_getters = (
         get_flight_search_client,
@@ -1021,9 +979,7 @@ def shutdown_container() -> None:
                 getter.__name__,
             )
 
-    # Providers first, then the clients they reference.
-    # Clearing a cache releases references; it does not
-    # construct new providers.
+    # Clearing releases references only; nothing is constructed.
     for getter in _ALL_GETTERS:
         getter.cache_clear()
 

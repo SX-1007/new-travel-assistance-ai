@@ -41,11 +41,10 @@ def normalise_adults(value: Any) -> int:
 
 
 def parse_budget_cap(value: Any, *, field_name: str) -> float | None:
-    """Return an optional spending cap; None or 0 both mean "no cap".
+    """An optional spending cap; None or 0 both mean "no cap".
 
-    Negative, NaN, infinite and boolean values are rejected. Treating 0 as
-    "no cap" preserves the old application's behaviour, where an unallocated
-    category must not filter out every result.
+    Negative, NaN, infinite and boolean values are rejected. 0 means no cap
+    because an unallocated category must not filter out every result.
     """
 
     if value is None:

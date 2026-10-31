@@ -129,7 +129,7 @@ def trusted_requirements(
 
 
 def effective_plan_revision(state: AgentState) -> int:
-    """Legacy plans without a revision count as revision 1."""
+    """Plans saved without a revision (by earlier versions) count as revision 1."""
 
     if state.plan_revision > 0:
         return state.plan_revision

@@ -1,21 +1,15 @@
-"""
-Firebase Firestore cache layer.
+"""Firestore-backed TTL cache, plus creator leases.
 
-Provides a TTL-based key-value cache backed by Firestore documents.
-Keys are deterministic SHA-256 hashes of a normalised key mapping, so
-'USD' and 'usd' collide (case-insensitive).
+A document's id is a SHA-256 of the normalised key mapping: string values
+are trimmed and lowercased, so 'USD' and 'usd' share an entry.
 
-The credential is injected through ``FirestoreCacheStore``'s constructor and
-the Firestore client is created lazily on first use, so importing this module
-needs neither configuration nor a network.
+The credential (a file path or the raw JSON) is injected, and the client is
+created on first use, so importing needs no configuration or network. Every
+public operation fails soft (None/False) instead of raising: a cache problem
+must never fail a request.
 
-Thread-safety:
-  • The process-wide firebase_admin app is initialised under _init_lock.
-  • Firestore client itself is thread-safe for reads & writes.
-
-Resilience:
-  • Handles the credential as either a file path or raw JSON string.
-  • Every public operation fails soft (None/False) instead of raising.
+Leases ("claims") let one caller build an expensive entry while the others
+wait for it, instead of every caller asking the provider at once.
 """
 
 from __future__ import annotations
@@ -55,11 +49,7 @@ ClaimStatus = Literal["cached", "claimed", "busy", "error"]
 
 
 def _generate_cache_key(prefix: str, key: Mapping[str, Any]) -> str:
-    """
-    Deterministic SHA-256 hash of the normalised key mapping → document ID.
-
-    String values are lowercased + trimmed so 'USD' and 'usd' collide.
-    """
+    """``prefix_`` + SHA-256 of the normalised key mapping."""
     normalised = {
         k: (str(v).strip().lower() if isinstance(v, str) else v)
         for k, v in key.items()
@@ -102,11 +92,10 @@ class FirestoreCacheStore:
             if not firebase_admin._apps:
                 cred_str = self._credential_json
 
+                # The credential is a file path or the raw JSON itself.
                 if os.path.isfile(cred_str):
-                    # It's a file path
                     cred = credentials.Certificate(cred_str)
                 else:
-                    # Assume it's a raw JSON string
                     try:
                         cred = credentials.Certificate(json.loads(cred_str))
                     except (json.JSONDecodeError, ValueError):
@@ -134,12 +123,8 @@ class FirestoreCacheStore:
         prefix: str,
         key: Mapping[str, Any],
     ) -> Optional[Any]:
-        """
-        Retrieve cached data from Firestore.
-
-        Returns the payload on hit, None on miss / expiry / error.
-        Expired documents are deleted best-effort.
-        """
+        """The payload, or None on a miss, expiry or error. Expired documents
+        are deleted on the way (best effort)."""
         try:
             doc_ref = self._doc_ref(collection, prefix, key)
             doc = doc_ref.get()
@@ -154,7 +139,6 @@ class FirestoreCacheStore:
         data = doc.to_dict() or {}
         expires_at = data.get("expires_at")
 
-        # TTL expired?
         now = datetime.now(timezone.utc)
         if expires_at is None or now > expires_at:
             _log("cache.firebase.expired")
@@ -184,16 +168,11 @@ class FirestoreCacheStore:
         payload: Any,
         ttl_hours: int = DEFAULT_TTL_HOURS,
     ) -> bool:
-        """
-        Write payload to Firestore with an expiry timestamp.
-
-        Returns True on success, False on failure.
-        """
+        """Store ``payload`` for ``ttl_hours``; False when it wasn't saved."""
         if ttl_hours <= 0:
             _log("cache.firebase.invalid_ttl")
             return False
 
-        # Size guard — Firestore doc max is ~1 MiB
         if _payload_too_large(payload):
             _log("cache.firebase.payload_too_large")
             return False
@@ -224,7 +203,13 @@ class FirestoreCacheStore:
         *,
         lease_seconds: int,
     ) -> tuple[ClaimStatus, Any, str | None]:
-        """Atomically return a cache hit or lease one empty key for construction."""
+        """In one transaction: return a fresh entry, or lease the key.
+
+        ``cached``: the payload is returned. ``claimed``: the caller builds the
+        entry, then calls ``complete_claim`` or ``release_claim`` with the
+        returned claim id. ``busy``: someone else holds the lease. ``error``:
+        Firestore failed.
+        """
         if lease_seconds <= 0:
             return "error", None, None
 
@@ -280,7 +265,7 @@ class FirestoreCacheStore:
         claim_id: str,
         ttl_hours: int = DEFAULT_TTL_HOURS,
     ) -> bool:
-        """Publish payload only if this caller still owns the atomic cache lease."""
+        """Publish ``payload``, but only if this caller still holds the lease."""
         if ttl_hours <= 0 or not claim_id:
             return False
         if _payload_too_large(payload):
@@ -325,7 +310,8 @@ class FirestoreCacheStore:
         *,
         claim_id: str,
     ) -> bool:
-        """Release only the matching failed creator lease so another caller retries."""
+        """Drop this caller's lease (it failed to build), so another caller
+        can try; someone else's lease is left alone."""
         if not claim_id:
             return False
         try:
@@ -352,18 +338,16 @@ class FirestoreCacheStore:
         return released
 
     def wait_for_claim_change(self, *, timeout_seconds: float) -> None:
-        """Wait briefly for a local claimant; remote claimants are re-polled safely."""
+        """Wake early when a lease in this process completes or is released.
+        Leases held by other processes are noticed when the caller polls again."""
         with self._claim_condition:
             self._claim_condition.wait(timeout=max(0.0, timeout_seconds))
 
     # ── Invalidation ────────────────────────────────────────────────
 
     def clear_collection(self, collection: str = DEFAULT_COLLECTION) -> int:
-        """
-        Delete all documents in `collection` in paginated batches.
-
-        Returns the total number of documents deleted.
-        """
+        """Delete every document in ``collection``, in batches; returns how
+        many were deleted."""
         _log("cache.firebase.clear_started")
         total_deleted = 0
 
@@ -398,11 +382,7 @@ class FirestoreCacheStore:
         prefix: str,
         key: Mapping[str, Any],
     ) -> bool:
-        """
-        Delete a single cached entry identified by prefix + key.
-
-        Returns True on success, False on failure.
-        """
+        """Delete one entry; False when that failed."""
         try:
             self._doc_ref(collection, prefix, key).delete()
             _log("cache.firebase.invalidate_succeeded")
@@ -412,7 +392,8 @@ class FirestoreCacheStore:
             return False
 
 
-# -------- Logging ------------------------------
+# ── Logging ─────────────────────────────────────────────────────────
+# Each event's level; an event missing here is not logged.
 _FIREBASE_EVENT_LEVELS = {
     "cache.firebase.credentials_invalid": logging.ERROR,
     "cache.firebase.initialized": logging.INFO,

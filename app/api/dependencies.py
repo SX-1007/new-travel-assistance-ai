@@ -19,8 +19,7 @@ from fastapi import (
 )
 
 
-# Alternative trusted-header names retained for compatibility
-# with the old API.
+# Other header names that clients may send the user id in.
 _USER_ID_FALLBACK_HEADERS: tuple[str, ...] = (
     "x-uid",
     "x-auth-user-id",
@@ -40,11 +39,12 @@ async def verify_user_token(
         Header(alias="X-User-ID"),
     ] = None,
 ) -> str:
-    """Return the validated caller user ID from trusted request headers.
+    """Return the caller's user ID from the request headers.
 
-    This preserves the authentication behaviour of the old application.
-    Token/JWT verification can later replace the trust step without changing
-    route signatures because callers depend only on ``CurrentUser``.
+    The header is trusted as sent: there is no token check yet, so any client
+    can act as any user (known issue B1). Routes depend only on
+    ``CurrentUser``, so a real token check can replace this function without
+    changing them.
     """
     user_id = x_user_id
 
@@ -134,6 +134,7 @@ async def get_request_id(
             )
             return request_id
 
+    # Several dependencies may ask within one request; all get the same id.
     cached = getattr(
         request.state,
         _REQUEST_STATE_ATTR,

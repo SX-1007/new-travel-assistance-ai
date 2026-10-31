@@ -45,8 +45,8 @@ def _state_budget_allocation(
         or {}
     )
 
-    # Compatibility with old checkpoints only.
-    # "flight" duplicated transportation.
+    # Sessions saved by earlier versions may also hold "flight", a duplicate
+    # of transportation.
     allocation.pop(
         "flight",
         None,
@@ -164,10 +164,9 @@ def propose_budget_change(
     Changes nothing until the budget check accepts it.
     """
 
-    # The old tool took a bare home-currency number. Found live: the model
-    # converted "5000 MYR" to JPY 193,219 and passed that, so the budget
-    # became MYR 193,219. Units are now explicit and converted here, and
-    # the amount must be one the user actually wrote.
+    # The model passes the amount and currency exactly as the user said them,
+    # and the server converts. Left to convert itself, the model once turned
+    # "5000 MYR" into JPY 193,219 and passed that as the home-currency total.
     home = state.base_currency_code or ""
     destination = state.dest_currency_code or ""
 
@@ -197,9 +196,8 @@ def propose_budget_change(
                 rate=rate,
             )
 
-            # Found live, after the fix above: the model reused a number
-            # from its own earlier (wrong) call instead of the user's.
-            # A total must come from the user's latest message.
+            # The total must come from the user's latest message: the model
+            # has been seen reusing a wrong number from its own earlier call.
             if not amount_is_stated(
                 home_amount,
                 stated_amounts(

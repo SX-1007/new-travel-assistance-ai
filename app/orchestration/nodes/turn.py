@@ -1,10 +1,8 @@
 """Start of a chat turn: reset turn-scoped state, queue memory extraction.
 
-The old ``memory_extraction_node`` claimed to be fire-and-forget but awaited
-the extraction (an LLM call plus two database writes) before the turn could
-continue, on a module-level thread pool created at import. Extraction now
-runs in the background with a bound on concurrent jobs; the current turn
-already sees the user's words in the conversation, so it loses nothing.
+Extraction (a model call plus two database writes) runs in the background
+with a bound on concurrent jobs, so the turn never waits for it. The current
+turn loses nothing: it already sees the user's words in the conversation.
 """
 
 from __future__ import annotations
@@ -99,11 +97,11 @@ async def begin_chat_turn_node(
 ) -> dict[str, Any]:
     """Reset turn-scoped state and queue memory extraction for the message.
 
-    Any transaction a previous turn left unfinished is discarded, not only a
-    failed one: the old reset kept a "validated" candidate from an
-    interrupted turn, which the next tool call could then publish. A
-    finished budget gate's outcome is cleared too (no recommendation is
-    pending on this path), so it can't be shown again over a later reply.
+    Any transaction a previous turn left unfinished is discarded, a "validated"
+    candidate included: otherwise a candidate from an interrupted turn could be
+    published by the next tool call. A finished budget gate's outcome is cleared
+    too (no recommendation is pending on this path), so it can't be shown again
+    over a later reply.
     """
 
     user_id = user_id_from_config(config)

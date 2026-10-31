@@ -75,10 +75,7 @@ class _SearchCache(Protocol):
 
 
 class SerpApiFlightProvider:
-    """
-    Search and normalize flight results without
-    orchestration dependencies.
-    """
+    """One-way Google Flights search through SerpAPI, normalised and cached."""
 
     def __init__(
         self,
@@ -128,9 +125,7 @@ class SerpApiFlightProvider:
             )
         )
 
-        # IATA resolution may involve two
-        # independent LLM calls, so these may
-        # safely execute in parallel.
+        # Each side may need a model call: resolve both at once.
         with ThreadPoolExecutor(
             max_workers=2
         ) as executor:
@@ -172,8 +167,7 @@ class SerpApiFlightProvider:
         ):
             return []
 
-        # Cache using canonical IATA identity,
-        # rather than raw country spelling.
+        # Keyed by airport code, so "USA" and "United States" share an entry.
         cache_key = {
             "origin_iata":
                 origin_iata,
@@ -236,6 +230,7 @@ class SerpApiFlightProvider:
                     "en",
             }
 
+            # A Google Flights link for the same search, shown with each result.
             booking_url = (
                 "https://www.google.com/"
                 "travel/flights?q="
@@ -265,6 +260,7 @@ class SerpApiFlightProvider:
             ):
                 return []
 
+            # SerpAPI reports "no results" and quota problems in the body.
             if payload.get("error"):
                 return []
 
@@ -347,6 +343,8 @@ def _validated_cached_flights(
     origin_iata: str,
     destination_iata: str,
 ) -> list[FlightResult]:
+    """Cached flights, validated again: a stale or malformed entry is
+    dropped, never trusted."""
 
     if not isinstance(
         payload,
@@ -398,6 +396,8 @@ def _parse_flight(
     *,
     booking_url: str,
 ) -> FlightResult | None:
+    """One SerpAPI itinerary, or None without a price or both airports.
+    Departure comes from the first segment, arrival from the last."""
 
     if not isinstance(
         raw_flight,
@@ -592,6 +592,8 @@ def _parse_flight(
 def _parse_airport(
     raw_airport: Any,
 ) -> FlightAirport | None:
+    """The airport, or None unless every code SerpAPI gives (``id`` and
+    ``code``) is the same valid IATA code."""
 
     if not isinstance(
         raw_airport,
@@ -647,10 +649,7 @@ def _parse_airport(
     if canonical_iata is None:
         return None
 
-    # Store the one verified identity in
-    # FlightAirport.id. No provider-specific
-    # "code" field needs to leak into the
-    # domain model.
+    # The one verified code goes in ``id``; SerpAPI's ``code`` field isn't kept.
     return FlightAirport(
         id=canonical_iata,
 

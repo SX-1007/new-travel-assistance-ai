@@ -268,6 +268,9 @@ class _Transaction:
     # ── Attempt loop ────────────────────────────────────────────────
 
     def run(self, limit: int) -> PlanningResult:
+        """Attempt, validate, and retry from the cheapest stage that can fix the
+        issues, until the plan qualifies, nothing can fix it, or ``limit`` runs out.
+        """
         started = self._clock()
         step = _Step(Stage.BOOKING)
         reports: list[ValidationReport] = []
@@ -299,6 +302,7 @@ class _Transaction:
             if isinstance(next_step, str):
                 return self._finish(attempt, reports, next_step, started)
 
+            # The same issues twice in a row: another retry won't help.
             fingerprint = frozenset((issue.code, issue.path) for issue in report.issues)
 
             if fingerprint == previous:

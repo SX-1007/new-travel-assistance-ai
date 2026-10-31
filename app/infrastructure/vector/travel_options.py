@@ -3,6 +3,9 @@
 Hotels, flights and activities found for one planning session are embedded and
 stored with a TTL so later turns can rank them against user preferences. This
 is retrieval infrastructure, not long-term user memory.
+
+Not wired in yet (known issue B15): only the table creation and the readiness
+check run; nothing calls ``upsert`` or ``search``.
 """
 
 from __future__ import annotations
@@ -122,7 +125,8 @@ class PgVectorTravelOptionStore:
 
     def ensure_schema(self) -> None:
         """
-        RUN ONCE AT STARTUP: enables pgvector, creates table & indexes.
+        Enable pgvector and create the table and indexes (at startup; safe to
+        repeat).
 
         Indexes:
           • B-tree on (session_id, category, expires_at) — session filtering
@@ -230,7 +234,6 @@ class PgVectorTravelOptionStore:
                 for item, vector in zip(items, vectors)
             ]
 
-            # Batch INSERT with ON CONFLICT upsert
             with get_connection() as conn:
                 with conn.cursor() as cur:
                     for i in range(0, len(records), UPSERT_BATCH_SIZE):

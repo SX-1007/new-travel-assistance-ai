@@ -4,12 +4,10 @@ Two rules cover every public message:
 
 * model-written text goes through ``generate_reviewed_reply`` (deterministic
   rules, then the semantic reviewer, with bounded rewrites);
-* fixed server text goes through ``OutputReviewService.check`` only. The old
-  graph sent its own fixed apology and budget texts to the paid semantic
-  reviewer (and could ask the model to "rewrite" them); it also raised
-  ``RuntimeError`` and failed the whole turn when a fallback text failed the
-  rules. Now a rejected server text is logged and replaced with the generic
-  fallback.
+* fixed server text goes through ``OutputReviewService.check`` only: no paid
+  review, and no model ever "rewrites" it. A fixed text that fails the rules
+  is logged and replaced with the generic fallback; the turn never fails
+  over it.
 """
 
 from __future__ import annotations
@@ -83,8 +81,8 @@ EDIT_NOT_VERIFIED: Final = (
     "been preserved exactly as it was."
 )
 EDIT_FAILED_VALIDATION: Final = (
-    # The old text said "the updated day did not pass validation", which the
-    # deterministic rules read as a success claim; it was never checked.
+    # Must not say "the updated day ...": the deterministic rules read that
+    # as a success claim.
     "I found the requested change, but the result did not pass itinerary "
     "validation, so I did not save it. Your existing itinerary is unchanged."
 )
@@ -100,8 +98,6 @@ MUTATION_MODEL_UNAVAILABLE_TEXT: Final = (
     "I found matching place options, but I could not complete the itinerary "
     "update right now. Please try the modification again."
 )
-# The old text asked for "the item number" even when the user had given the
-# day and position, so it read as if the request had not been understood.
 MUTATION_TARGET_REQUIRED_TEXT: Final = (
     "I looked for places but couldn't choose one safely, so your itinerary has "
     "not been changed. Tell me the day, which item to change (for example "
@@ -169,9 +165,9 @@ def plan_instruction(kind: PlanKind, view: AgentState) -> str:
     """The writing instruction for a qualified plan, with the accepted
     budget's exact figures for a budget re-plan.
 
-    Found live: after "change my budget to 5000 MYR" was refused and the
-    recommended MYR 8,068.14 accepted, the writer still wrote "MYR 5,000"
-    from the conversation, and the reviewer rejected every draft.
+    Without them the writer may quote an earlier, refused amount from the
+    conversation (seen live: "MYR 5,000" after MYR 8,068.14 was accepted), and
+    the reviewer then rejects every draft.
     """
 
     instruction = PLAN_INSTRUCTIONS[kind]
@@ -296,8 +292,6 @@ def unverified_reply_text(state: AgentState) -> str:
     if is_read_only_itinerary_history_request(latest_user_request(state.messages)):
         return HISTORY_UNVERIFIED
 
-    # The old graph used the "historical trip detail" text for every
-    # non-edit question.
     return GENERIC_UNVERIFIED
 
 

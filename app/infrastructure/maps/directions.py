@@ -1,11 +1,8 @@
-"""Mapbox Directions infrastructure.
+"""Mapbox Directions: routes only.
 
-This module only fetches routes. It has its own HTTP session, separate from
-the forward and reverse geocoders, so a slow or failing Directions request
-never ties up geocoding connections.
-
-It intentionally has no dependency on AgentState, LangGraph, itinerary
-payloads, or application-global settings.
+It has its own HTTP session, separate from the forward and reverse
+geocoders, so a slow or failing Directions request never ties up geocoding
+connections.
 """
 
 from __future__ import annotations
@@ -62,8 +59,6 @@ _RETRY_STRATEGY = Retry(
 
 def _build_http_session(
 ) -> requests.Session:
-    """Create the isolated Mapbox Directions HTTP client."""
-
     session = requests.Session()
 
     adapter = HTTPAdapter(
@@ -119,6 +114,9 @@ def _non_negative(value: Any) -> float | None:
 
 
 def _parse_route(payload: dict[str, Any]) -> DirectionsRoute | None:
+    """The first route, or None unless it has a distance, a duration and a
+    LineString of at least two valid points.
+    """
     routes = payload.get("routes") or []
 
     if not routes or not isinstance(routes[0], dict):
@@ -165,12 +163,7 @@ def _parse_route(payload: dict[str, Any]) -> DirectionsRoute | None:
 
 
 class MapboxDirectionsClient:
-    """
-    Thread-safe Mapbox Directions adapter.
-
-    The access token is injected instead of
-    importing global application settings.
-    """
+    """Thread-safe Mapbox Directions client."""
 
     def __init__(
         self,
@@ -209,11 +202,10 @@ class MapboxDirectionsClient:
         coordinates: Sequence[LngLat],
         profile: RouteProfile,
     ) -> DirectionsRoute | None:
-        """
-        Return the first Mapbox route over the ordered coordinates.
+        """The first Mapbox route over the ordered coordinates.
 
-        None means no usable route (bad input, provider failure, or no
-        route found). Nothing is cached: itinerary routes rarely repeat.
+        None means no usable route (bad input, provider failure, or no route).
+        Nothing is cached: itinerary routes rarely repeat.
         """
 
         if profile not in _SUPPORTED_PROFILES:

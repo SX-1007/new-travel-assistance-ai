@@ -17,7 +17,7 @@ from app.orchestration.tests.node_fakes import candidate, committed_state, tool_
         ({"chat_budget_action": "accept_recommended"}, "assess_chat_budget"),
         ({"pending_budget_proposal": {"mode": "recommendation"}}, "assess_chat_budget"),
         ({"pending_budget_confirmation": {"budget_assessment_id": "a"}}, "budget_decision_agent"),
-        # The old graph locked the chat into budget-only mode here.
+        # An unavailable check with nothing pending must not lock the chat.
         ({"budget_gate_outcome": "budget_check_unavailable"}, "begin_chat_turn"),
         ({}, "begin_chat_turn"),
     ],

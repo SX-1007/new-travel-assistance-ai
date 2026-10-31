@@ -1,14 +1,13 @@
 """Bounded, structured request log events.
 
-Used by planning, output review, factual Q&A and, later, the graph and the
-form/chat routers. Every field is sanitised to a short safe token, so a log
-line can never carry user text, provider payloads or unbounded data, and a
-broken handler can never affect the request.
+Used across the app: planning, output review, factual Q&A, the graph and
+the routers. Every field is sanitised to a short safe token, so a log line
+can never carry user text, provider payloads or unbounded data, and a broken
+handler can never affect the request.
 
-The fields are written into the message itself (``event key=value ...``).
-The app's log format prints only ``%(message)s``; fields passed only through
-``extra=`` would be invisible. They are also attached as
-``record.event_fields`` for structured handlers.
+The fields are written into the message itself (``event key=value ...``),
+because the app's log format prints the message but not ``extra=`` fields.
+They are also attached as ``record.event_fields`` for structured handlers.
 """
 
 from __future__ import annotations

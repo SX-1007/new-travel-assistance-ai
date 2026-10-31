@@ -21,7 +21,7 @@ DEFAULT_EMBEDDING_DIMENSION = 3072
 EMBED_BATCH_SIZE = 64
 MAX_EMBED_RETRIES = 3
 RETRY_BASE_WAIT = 1.5
-EMBED_PARALLEL_WORKERS = 3  # parallel batch embedding workers
+EMBED_PARALLEL_WORKERS = 3
 
 
 def _require_text(value: str, name: str) -> str:

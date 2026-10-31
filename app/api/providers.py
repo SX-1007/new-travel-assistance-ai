@@ -26,6 +26,8 @@ HistoryLoader = Callable[[str, int], list[dict[str, Any]]]
 
 
 def graph_runtime() -> GraphRuntime:
+    # Before startup finishes (or after shutdown) the graph doesn't exist:
+    # answer 503 rather than 500.
     try:
         return container.get_graph_runtime()
     except RuntimeError as exc:

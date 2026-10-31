@@ -3,7 +3,7 @@
 Reviewers and answer writers need the facts a reply can mention (days,
 dates, bookings, places, costs, travel times), not the stored payload.
 Coordinates, GeoJSON maps, thumbnails, provider links and descriptions are
-left out: they made every review call several times larger without
+left out: they would make every review call several times larger without
 supporting any claim a reply makes.
 """
 

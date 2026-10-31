@@ -1,16 +1,17 @@
-"""
-Memory Extraction Module — Mem0 Tiered Extraction Engine
+"""Long-term memory extraction from one chat message.
 
-Extracts long-term user traits from conversation messages and routes them
-to appropriate storage tiers (relational profile + vector database).
+A model reads the user's latest message and returns only lasting traits
+(home, travel pacing, diet, interests, lodging style). They are saved in two
+places at once: the profile row (``user_profiles``) and the embedded
+preference store (``mem0_vector``, searched by meaning).
 
-Design:
-  • The chat model is injected (``build_extraction_chain``); this module
-    reads no settings and creates no clients at import time
-  • Parallel relational + vector writes via a short-lived thread pool
-  • Exponential backoff with jitter for LLM retries (max 3 calls/message)
-  • Trivial-message pre-filtering to skip unnecessary LLM calls
-  • Module-level prompt template (compiled once at import)
+Greetings and one-word replies are skipped without a model call. A failed
+call is retried with backoff, at most ``MAX_LLM_RETRIES`` calls per message.
+The chat model is injected (``build_extraction_chain``); nothing here reads
+settings.
+
+Known gap (B4): a ``home_country`` learned from chat is saved without the
+country check that onboarding applies.
 """
 
 from __future__ import annotations
@@ -38,31 +39,22 @@ __all__ = [
     "run_memory_extraction_task",
 ]
 
-# ──────────────────────────────────────────────
-# Logging Setup
-# ──────────────────────────────────────────────
 logger = logging.getLogger(__name__)
 
-# ──────────────────────────────────────────────
-# Constants
-# ──────────────────────────────────────────────
 # Total extraction attempts per message. The injected chat model should be
 # built with max_retries=1 so attempts are not multiplied by client retries.
 MAX_LLM_RETRIES = 3
 LLM_RETRY_BASE_WAIT = 1.5
 LLM_RETRY_MAX_WAIT = 10.0
-_MAX_MESSAGE_LENGTH = 8_192  # Guard against oversized inputs
+_MAX_MESSAGE_LENGTH = 8_192
 
-# Pre-compiled regex for trivial-message detection (O(1) match)
+# Greetings and acknowledgements: nothing to learn, so no model call.
 _TRIVIAL_RE = re.compile(
     r"^(hi|hello|hey|ok|okay|thanks|thank\s+you|yes|no|sure|cool|nice|great|bye|gotcha|alright)\s*[!.?]*$",
     re.IGNORECASE,
 )
 
 
-# ──────────────────────────────────────────────
-# Pydantic Models
-# ──────────────────────────────────────────────
 class LongTermMemory(BaseModel):
     """Permanent user traits stored in the relational profile and vector DB."""
 
@@ -92,11 +84,8 @@ class LongTermMemory(BaseModel):
     )
 
 
-# ──────────────────────────────────────────────
-# Prompt Template (compiled once at module load)
-# ──────────────────────────────────────────────
 _EXTRACTION_PROMPT = ChatPromptTemplate.from_messages(
-    [  # FIX #2: from_messages (plural)
+    [
         (
             "system",
             """You are the Mem0 Context Management Engine for an AI Travel Agent.
@@ -125,24 +114,13 @@ User: "Can you find a hotel with a gym for next week?"
 )
 
 
-# ──────────────────────────────────────────────
-# Chain Construction (LLM injected by the composition root)
-# ──────────────────────────────────────────────
 def build_extraction_chain(llm: BaseChatModel) -> Runnable:
-    """
-    Build the extraction chain around an injected chat model.
+    """The extraction chain around an injected chat model (a fake one in tests)."""
 
-    The model is created by the composition root, so this module needs no
-    credentials and can be tested with a fake chat model.
-    """
-
-    # Force the memory schema tool explicitly.
-    #
-    # The project's older langchain-google-genai integration does not
-    # automatically recognise Gemini 3.x model names when deciding whether
-    # structured output can force a tool call. Without an explicit tool_choice,
-    # Gemini may return a normal text response and the Pydantic parser returns
-    # None, causing valid preferences to be treated as "no traits".
+    # Force the LongTermMemory tool call. langchain-google-genai 2.1 doesn't
+    # recognise Gemini 3 model names as able to force structured output, so
+    # without an explicit tool_choice Gemini may answer in prose; the parser
+    # then returns None and real preferences would be lost as "no traits".
     forced_llm = llm.bind_tools(
         [LongTermMemory],
         tool_choice=LongTermMemory.__name__,
@@ -163,32 +141,23 @@ def build_extraction_chain(llm: BaseChatModel) -> Runnable:
     return chain
 
 
-# ──────────────────────────────────────────────
-# Helper Functions
-# ──────────────────────────────────────────────
 def _is_trivial(message: str) -> bool:
-    """
-    Check if a message is trivial (greeting / acknowledgement).
-    These messages are skipped to avoid unnecessary LLM calls.
-    """
+    """Very short messages and greetings/acknowledgements."""
     stripped = message.strip().lower()
     return len(stripped) < 4 or bool(_TRIVIAL_RE.match(stripped))
 
 
 def _calculate_backoff(attempt: int) -> float:
-    """
-    Calculate exponential backoff with jitter.
-    Jitter prevents thundering-herd when the LLM service recovers.
-    """
+    """Exponential backoff plus up to 10% jitter, so retries from many requests don't land at once."""
     base = min(LLM_RETRY_BASE_WAIT * (2 ** (attempt - 1)), LLM_RETRY_MAX_WAIT)
-    jitter = random.uniform(0, base * 0.1)  # Up to 10% jitter
+    jitter = random.uniform(0, base * 0.1)
     return base + jitter
 
 
 def _has_long_term_traits(
     memory: LongTermMemory,
 ) -> bool:
-    """Return True only when at least one persistent trait was extracted."""
+    """Whether at least one trait was extracted."""
 
     return any(
         (
@@ -207,7 +176,7 @@ def _update_relational_db(
     user_id: str,
     updates: Dict[str, Any],
 ) -> bool:
-    """Update relational long-term memory."""
+    """Save to the profile row; False (logged) on failure."""
 
     try:
         return memory_service.update_profile(
@@ -228,7 +197,7 @@ def _update_vector_db(
     user_id: str,
     categories: Dict[str, List[str]],
 ) -> bool:
-    """Update semantic long-term memory."""
+    """Save to the preference store; False (logged) on failure."""
 
     try:
         return (
@@ -247,26 +216,13 @@ def _update_vector_db(
         return False
     
 
-# ──────────────────────────────────────────────
-# Core Extraction Logic
-# ──────────────────────────────────────────────
 def analyse_and_extract_traits(
     user_message: str,
     *,
     chain: Runnable,
 ) -> Optional[LongTermMemory]:
-    """
-    Send the user message to the LLM and extract long-term memory traits.
-
-    Implements exponential backoff with jitter for transient LLM failures.
-    Pre-filters trivial messages to avoid unnecessary LLM calls.
-
-    Args:
-        user_message: The user's latest chat message.
-        chain: Extraction chain from ``build_extraction_chain``.
-
-    Returns:
-        LongTermMemory instance if traits were found, None otherwise.
+    """The traits in ``user_message``; None when there are none, the message
+    is trivial, or every attempt failed (failures are retried with backoff).
     """
     if not user_message or not user_message.strip():
         return None
@@ -275,8 +231,7 @@ def analyse_and_extract_traits(
         log_memory_event(logger, "memory.extractor.trivial")
         return None
 
-    # Guard against excessively long inputs (Google flash handles 1M tokens,
-    # but truncating saves bandwidth and reduces latency)
+    # Bound the input: a long paste adds cost and latency, not traits.
     message = user_message.strip()[:_MAX_MESSAGE_LENGTH]
 
     for attempt in range(1, MAX_LLM_RETRIES + 1):
@@ -331,9 +286,6 @@ def analyse_and_extract_traits(
     return None
 
 
-# ──────────────────────────────────────────────
-# Graph Node — Parallel DB Routing
-# ──────────────────────────────────────────────
 def run_memory_extraction_task(
     user_id: str,
     user_message: str,
@@ -341,40 +293,22 @@ def run_memory_extraction_task(
     chain: Runnable,
     memory_service: MemoryService,
 ) -> Dict[str, Any]:
-    """
-    LangGraph-compatible node function.
+    """Extract traits from one message and save them.
 
-    Extracts long-term traits from the user message and routes them to
-    the appropriate storage tier **in parallel**:
-      • Relational DB (home_country, home_state, travel_pacing)
-      • Vector DB (dietary, interests, accommodation)
-
-    Relational and vector writes run concurrently in a short-lived
-    two-thread pool, reducing total latency from (DB1 + DB2) to
-    max(DB1, DB2) without leaving a global executor to shut down.
-
-    Args:
-        user_id: The authenticated user's ID.
-        user_message: The user's latest chat message.
-        chain: Extraction chain from ``build_extraction_chain``.
-        memory_service: Long-term memory use cases.
-
-    Returns:
-        Dict with key ``"memory_updated"`` (bool) indicating whether any
-        persistence operation succeeded.
+    Runs in the background (the graph's memory queue). Returns
+    ``{"memory_updated": bool}``: true when either store was updated.
     """
     log_memory_event(logger, "memory.extractor.started")
 
     if not user_id:
         return {"memory_updated": False}
 
-    # ── Step 1: Extract traits via LLM ──────────────────────
     extracted_data = analyse_and_extract_traits(user_message, chain=chain)
 
     if not extracted_data:
         return {"memory_updated": False}
 
-    # ── Step 2: Prepare DB updates ──────────────────────────
+    # Every trait goes to the profile row.
     relational_updates: Dict[str, Any] = {}
 
     if extracted_data.home_country:
@@ -400,15 +334,14 @@ def run_memory_extraction_task(
         )
 
 
-    # Keep a semantic/vector copy as the second memory tier.
+    # The list traits also go to the preference store, as sentences that can
+    # be searched by meaning.
     vector_categories: Dict[str, Optional[List[str]]] = {
         "dietary": extracted_data.dietary_restrictions,
         "interest": extracted_data.interests,
         "accommodation": extracted_data.accommodation_preferences,
 
-        # Keep a Mem0 fallback for pacing too.
-        # This prevents the preference from disappearing if an older
-        # user_profiles schema does not contain travel_pacing.
+        # A second copy of pacing, besides the profile column.
         "travel_pacing": (
             [extracted_data.travel_pacing]
             if extracted_data.travel_pacing
@@ -425,7 +358,7 @@ def run_memory_extraction_task(
     if not relational_updates and not valid_categories:
         return {"memory_updated": False}
 
-    # ── Step 3: Parallel DB Writes ──────────────────────────
+    # Both writes at once; either success counts as an update.
     futures: Dict[Future, str] = {}
     executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="mem0-db")
 
@@ -459,7 +392,6 @@ def run_memory_extraction_task(
 
         futures[future] = "vector"
 
-    # Collect results as they complete (non-blocking on the slower one)
     memory_updated = False
     try:
         for future in as_completed(futures):

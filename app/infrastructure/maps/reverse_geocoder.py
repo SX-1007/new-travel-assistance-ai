@@ -1,10 +1,6 @@
-"""Mapbox reverse-geocoding infrastructure.
+"""Mapbox reverse geocoding: coordinates → country and locality names.
 
-This module performs only reverse-geocoding operations required
-to verify geographic country/locality evidence.
-
-It intentionally has no dependency on booking, routing,
-AgentState, LangGraph, or application-global settings.
+Used to verify that a place, hotel or city really is where a provider says.
 """
 
 from __future__ import annotations
@@ -59,8 +55,6 @@ _RETRY_STRATEGY = Retry(
 
 def _build_http_session(
 ) -> requests.Session:
-    """Create the isolated Mapbox HTTP client."""
-
     session = requests.Session()
 
     adapter = HTTPAdapter(
@@ -86,12 +80,7 @@ def _normalise_coordinates(
     latitude: float,
     longitude: float,
 ) -> tuple[float, float] | None:
-    """
-    Return validated coordinates or None.
-
-    This rejects booleans, NaN, infinity and
-    geographically impossible coordinates.
-    """
+    """Finite, in-range coordinates (no booleans), or None."""
 
     if (
         isinstance(latitude, bool)
@@ -130,12 +119,7 @@ def _normalise_coordinates(
 
 
 class MapboxReverseGeocoder:
-    """
-    Thread-safe Mapbox reverse-geocoding adapter.
-
-    The access token is injected instead of
-    importing global application settings.
-    """
+    """Thread-safe Mapbox reverse geocoder with its own caches."""
 
     def __init__(
         self,
@@ -197,12 +181,9 @@ class MapboxReverseGeocoder:
         latitude: float,
         longitude: float,
     ) -> str | None:
-        """
-        Return the ISO-3166 alpha-2 country
-        containing the supplied coordinates.
+        """The ISO 3166 alpha-2 country containing the coordinates, or None.
 
-        Successful empty responses are cached.
-        Transport failures are not cached.
+        "No country" answers are cached; transport failures are not.
         """
 
         coordinates = (
@@ -325,17 +306,10 @@ class MapboxReverseGeocoder:
         longitude: float,
         destination_country_code: str,
     ) -> tuple[str, ...] | None:
-        """
-        Return structured locality/admin names
-        associated with coordinates.
+        """Locality and admin-area names for the coordinates.
 
-        None:
-            Mapbox/provider boundary failed and
-            the request may be retried later.
-
-        Empty tuple:
-            Mapbox succeeded but returned no
-            acceptable locality evidence.
+        None: the request failed and may be retried later. An empty tuple: Mapbox
+        answered but gave no usable locality.
         """
 
         coordinates = (
@@ -553,12 +527,7 @@ class MapboxReverseGeocoder:
         types: str | None = None,
         country: str | None = None,
     ) -> dict[str, Any] | None:
-        """
-        Execute one reverse-geocoding request.
-
-        HTTP retry belongs entirely to the
-        configured requests adapter.
-        """
+        """One reverse-geocoding request; retries are left to the session's HTTP adapter."""
 
         params: dict[str, Any] = {
             "longitude": longitude,

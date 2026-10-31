@@ -2,7 +2,7 @@
 
 The structured-output schema is deliberately lenient and each idea is
 validated on its own: with a strict schema, one malformed idea (a negative
-cost, day 0) made the whole response fail and discarded every good idea.
+cost, day 0) would fail the whole response and discard every good idea.
 """
 
 from __future__ import annotations
@@ -224,6 +224,7 @@ class GeminiActivityIdeaGenerator:
         inputs["excluded_places"] = ", ".join(excluded_places) or "none"
         inputs["dates"] = _day_list(request)
 
+        # The model may still return other days; keep only the ones asked for.
         allowed = set(missing_days)
 
         return [

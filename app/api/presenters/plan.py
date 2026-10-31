@@ -2,8 +2,8 @@
 
 Only ``accepted_plan_snapshot`` is ever shown, and only after it passes the
 itinerary validator again against the session's own requirements: a
-snapshot written by older code, or one whose financials no longer match the
-state, is never rendered.
+snapshot saved by an earlier version of the app, or one whose financials no
+longer match the state, is never rendered.
 """
 
 from __future__ import annotations

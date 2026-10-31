@@ -97,6 +97,7 @@ class BudgetConfirmationResponse(BaseModel):
 
     evidence: BudgetEvidenceResponse
 
+    # Always null: the frontend expects these keys on every form response.
     itinerary: None = None
     daily_geojson_maps: None = None
 
@@ -121,6 +122,7 @@ class BudgetCheckUnavailableResponse(BaseModel):
 
     chat_reply: str
 
+    # Always null: the frontend expects these keys on every form response.
     itinerary: None = None
     daily_geojson_maps: None = None
 

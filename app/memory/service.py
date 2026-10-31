@@ -17,10 +17,7 @@ from app.memory.preferences import (
 
 
 class MemoryService:
-    """
-    Coordinate long-term-memory behaviour without
-    depending on concrete storage technology.
-    """
+    """Long-term memory over the profile row and the preference store."""
 
     def __init__(
         self,
@@ -36,19 +33,14 @@ class MemoryService:
         user_id: str,
         updates: Mapping[str, Any],
     ) -> bool:
-        """
-        Merge learned list-based memory fields before
-        persisting the resulting profile update.
-        """
+        """Save learned traits; list fields are merged with the stored ones, not replaced."""
 
         if not user_id or not updates:
             return False
 
-        # IMPORTANT:
-        # Updating memory must fail closed if the old
-        # profile cannot be read. Otherwise an outage
-        # could cause existing list memories to be
-        # overwritten by only the newly extracted values.
+        # Fails closed: if the current profile can't be read, raise rather
+        # than save, or an outage would overwrite the stored lists with only
+        # the newly learned values.
         current = self._profile_store.fetch_profile(
             user_id
         )
@@ -73,9 +65,8 @@ class MemoryService:
         self,
         user_id: str,
     ) -> dict[str, Any]:
-        """
-        Return the merged relational and semantic
-        long-term-memory context.
+        """The user's profile with the preference store's sentences merged in, for
+        prompts. ``{}`` when there is nothing (or the profile can't be read).
         """
 
         if not user_id:
@@ -89,9 +80,7 @@ class MemoryService:
             )
 
         except Exception:
-            # Context retrieval may fail soft because
-            # failing to retrieve optional context must
-            # not make an ordinary chat request fail.
+            # Fails soft: personalisation is optional, a chat turn is not.
             merged = {}
 
         vector_memory = (
@@ -107,6 +96,7 @@ class MemoryService:
             if not values:
                 continue
 
+            # Pacing is one value: the profile column wins over the copy.
             if category == "travel_pacing":
                 if not merged.get(
                     "travel_pacing"
@@ -143,8 +133,6 @@ class MemoryService:
             list[str],
         ],
     ) -> bool:
-        """Persist extracted semantic preferences."""
-
         if (
             not user_id
             or not categorized_preferences

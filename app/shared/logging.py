@@ -1,9 +1,4 @@
-"""
-Generic application logging utilities.
-
-This module must not contain provider-specific or feature-specific
-event definitions.
-"""
+"""Generic logging helpers; no feature-specific event definitions here."""
 
 from __future__ import annotations
 
@@ -35,10 +30,8 @@ def safe_log(
     *,
     status_code: Any = None,
 ) -> None:
-    """
-    Write a log entry without allowing logging failures
-    to affect application behaviour.
-    """
+    """Log a fixed event name (and an HTTP status), never data; a logging
+    failure is swallowed so it can't affect the request."""
 
     try:
         bounded_status = bounded_http_status(status_code)

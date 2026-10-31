@@ -16,7 +16,8 @@ _COLLECTION: Final = "api_cache"
 
 
 class FirebaseBookingSearchCache:
-    """Small cache adapter used by booking provider infrastructure."""
+    """Booking-search cache. A Firestore failure counts as a miss (or an
+    unsaved entry), never an error: search works without the cache."""
 
     def __init__(self, *, store: FirestoreCacheStore) -> None:
         self._store = store

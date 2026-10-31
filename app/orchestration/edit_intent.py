@@ -410,8 +410,7 @@ def pending_mutation_record(
 
     return {
         "status": "awaiting_day",
-        # The old record always stored None here, so the continuation lost
-        # the user's wording.
+        # The user's own wording, restated when they answer with the day.
         "source_request": source_request.strip()[:_MAX_SOURCE_REQUEST] or None,
         "edits": pending_edits,
     }

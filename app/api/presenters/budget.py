@@ -6,10 +6,9 @@ checks that record against its embedded assessment and the session's trip
 and renders the confirmation card and its text. Nothing a model wrote is
 shown here.
 
-The old router also re-read every pending assessment from Firestore, on
-the event loop, for each live turn and each restored session. Accepting a
-recommendation re-verifies it against the store anyway (the chat gate), so
-display now checks it locally: same trip, arithmetic, and not expired.
+Display checks a record locally (same trip, consistent figures, not
+expired) without reading the assessment store: accepting a recommendation
+re-verifies it against the store anyway (the chat gate).
 """
 
 from __future__ import annotations

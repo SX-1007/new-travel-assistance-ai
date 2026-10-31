@@ -92,7 +92,7 @@ def _day_numbers(itinerary: Sequence[Mapping[str, Any]]) -> list[int]:
 
 
 class BookingPlanningService:
-    """Flights + hotel for a trip, without LangGraph or AgentState."""
+    """Flights and hotel for a trip, and alternatives to either."""
 
     def __init__(
         self,

@@ -1,11 +1,9 @@
 """Where the graph goes next: pure functions of the state, no I/O.
 
 The nodes record their decisions in state (``post_tool_outcome``,
-``budget_gate_outcome``, ``candidate_plan``), so routing only reads them.
-The old routers re-derived decisions instead: ``route_after_post_tool``
-re-parsed the tool messages and re-validated trip changes against the
-already-updated state, and two routers looped back into planning for retries
-the planning workflow now runs itself.
+``budget_gate_outcome``, ``candidate_plan``), so routing only reads them and
+never re-derives a decision from tool messages. Retries are not routed
+either: the planning workflow runs its own bounded retry loop.
 """
 
 from __future__ import annotations

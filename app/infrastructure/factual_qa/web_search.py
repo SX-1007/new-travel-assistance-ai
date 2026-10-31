@@ -17,7 +17,7 @@ class SerpApiWebSearch:
     def search(self, query: str, *, limit: int) -> list[SearchHit]:
         # The target location is already part of the query text. SerpAPI's
         # "location" parameter only accepts its own canonical names and
-        # rejected the whole search for anything else.
+        # rejects the whole search for anything else.
         payload = self._client.search({"engine": "google", "q": query, "hl": "en", "num": limit})
 
         if payload.get("error"):

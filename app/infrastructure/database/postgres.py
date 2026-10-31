@@ -138,11 +138,8 @@ def verify_connection_pool() -> bool:
 
 @contextmanager
 def get_connection() -> Iterator[Connection[Any]]:
-    """Yield a pooled PostgreSQL connection.
-
-    This is the public database boundary. Callers do not know which concrete
-    pool implementation is used, so the pool can change without requiring
-    changes throughout memory/orchestration modules.
+    """A pooled connection: the only way other modules reach the database, so
+    the pool can change without touching them.
     """
     pool = _connection_pool
 

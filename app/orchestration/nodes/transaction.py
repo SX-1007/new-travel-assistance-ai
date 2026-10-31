@@ -4,9 +4,8 @@ A change that needs a new plan (new dates, a new destination, an accepted
 budget, a category budget) is held in ``plan_overrides`` while the plan is
 built and reviewed. The nodes plan, review and validate against
 ``transaction_view(state)``; only promotion copies the overrides into the
-public fields. The old graph wrote trip-detail changes into the public state
-before re-planning, so a failed replan left, say, a 5-day date range over a
-3-day itinerary, and every later edit failed validation against it.
+public fields. So a failed re-plan leaves the trip exactly as it was: never,
+say, a 5-day date range over a 3-day itinerary.
 """
 
 from __future__ import annotations
@@ -40,9 +39,8 @@ class PlanKind(str, Enum):
 def transaction_view(state: AgentState) -> AgentState:
     """``state`` as the running transaction sees it (overrides applied).
 
-    A shallow copy: the nodes only read it, and nothing is deep-copied (the
-    old graph deep-copied the whole state, messages included, several times
-    per turn).
+    A shallow copy: the nodes only read it, so nothing (least of all the
+    message history) is deep-copied.
     """
 
     update = committed_overrides(state)

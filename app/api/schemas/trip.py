@@ -168,8 +168,9 @@ class InitialFormRequest(BaseModel):
 
 
 def _iso_date(value: str, field_name: str) -> date:
-    """Exactly ``YYYY-MM-DD``: the old ``strptime`` check also accepted
-    "2026-1-5", which every downstream budget and planning model rejects."""
+    """Exactly ``YYYY-MM-DD``. ``date.fromisoformat`` alone also accepts
+    other ISO forms such as "20260105", which the budget and planning models
+    reject; the round trip below refuses them."""
 
     try:
         parsed = date.fromisoformat(value)

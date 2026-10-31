@@ -122,10 +122,7 @@ class Workflow(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class TurnResult:
-    """The state after one turn, and whether a new plan revision was published.
-
-    The old invoker mixed ``_itinerary_modified`` into the state dict.
-    """
+    """The state after one turn, and whether a new plan revision was published."""
 
     state: dict[str, Any]
     plan_changed: bool
@@ -352,10 +349,10 @@ class GraphRuntime:
         values: Mapping[str, Any],
         log_context: LogContext,
     ) -> list[dict[str, Any]]:
-        """Rebuild revision history for a session that predates the field.
+        """Rebuild revision history for a session saved before the history field.
 
-        Scanned at most once per session per process: the old invoker
-        re-read up to 200 checkpoints on every turn when nothing was found.
+        Scanned at most once per session per process, so a session with nothing to
+        find doesn't rescan up to 200 checkpoints on every turn.
         """
 
         revision = _revision(values)

@@ -172,8 +172,7 @@ def test_unverified_general_answers_get_the_general_fallback():
         decisions=(UNAVAILABLE,),
     )
 
-    # The old graph answered every non-edit question with the
-    # "historical trip detail" text.
+    # Not the "historical trip detail" text: that one is for history questions.
     assert update["messages"][0].content == GENERIC_UNVERIFIED
 
 

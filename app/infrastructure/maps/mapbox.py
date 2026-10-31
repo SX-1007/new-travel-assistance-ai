@@ -1,11 +1,7 @@
-"""Mapbox forward-geocoding infrastructure.
+"""Mapbox forward geocoding: place name → coordinates.
 
-This module performs only forward geocoding (place name → coordinates).
 Reverse geocoding lives in ``reverse_geocoder.py`` with its own HTTP session
-and caches, so a failure or change in one never affects the other.
-
-It intentionally has no dependency on any feature module, AgentState,
-LangGraph, or application-global settings.
+and caches, so a failure in one never affects the other.
 """
 
 from __future__ import annotations
@@ -63,8 +59,6 @@ _RETRY_STRATEGY = Retry(
 
 def _build_http_session(
 ) -> requests.Session:
-    """Create the isolated Mapbox forward-geocoding HTTP client."""
-
     session = requests.Session()
 
     adapter = HTTPAdapter(
@@ -164,12 +158,7 @@ def _parse_first_feature(
 
 
 class MapboxForwardGeocoder:
-    """
-    Thread-safe Mapbox forward-geocoding adapter.
-
-    The access token is injected instead of
-    importing global application settings.
-    """
+    """Thread-safe Mapbox forward geocoder with its own cache."""
 
     def __init__(
         self,
@@ -221,11 +210,10 @@ class MapboxForwardGeocoder:
         *,
         proximity: tuple[float, float] | None = None,
     ) -> GeocodedPlace | None:
-        """
-        Return the best match for a place name, or None.
+        """The best match for a place name, or None.
 
-        ``proximity`` is an optional (longitude, latitude) bias.
-        Empty answers are cached; transport failures are not.
+        ``proximity`` is an optional (longitude, latitude) bias. "No match" answers
+        are cached; transport failures are not.
         """
 
         if not isinstance(query, str):

@@ -482,13 +482,8 @@ def _validate_day_activities(
                     ),
                 )
 
-        # Count the CONFIGURED trip city as covered.
-        #
-        # For example:
-        # requested_city    = Tokyo
-        # verified_locality = Urayasu
-        #
-        # This still represents a Tokyo-based itinerary day.
+        # The configured trip city counts as covered: a verified place in
+        # Urayasu on a Tokyo trip is still a Tokyo day.
         if valid and requested_city_key is not None:
             verified_count += 1
             covered_city_keys.add(requested_city_key)
@@ -519,6 +514,10 @@ def _validate_hotel(
     *,
     required: bool,
 ) -> tuple[list[_ExpectedPoint], float]:
+    """One day's hotel: required on overnight days and absent otherwise, with a
+    valid price, name and in-country coordinates. Returns its map point (for the
+    map check) and the night's cost (for the day total).
+    """
     hotel = day.get("hotel")
     if not isinstance(hotel, Mapping):
         if required:
@@ -597,6 +596,10 @@ def _validate_day_flights(
     is_first_day: bool,
     is_last_day: bool,
 ) -> tuple[float, _FlightEvidence | None, _FlightEvidence | None]:
+    """One day's flights: exactly the boundary legs the day needs (outbound on
+    day 1, return on the last day, both on a same-day trip), each valid. Returns
+    the flight cost and the outbound and return evidence for the trip checks.
+    """
     raw_flights = day.get("flight")
     if raw_flights is None:
         flights: list[Any] = []
@@ -671,6 +674,7 @@ def _validate_flight(
     *,
     expected_date: str | None,
 ) -> _FlightEvidence | None:
+    """One flight leg's shape, price, airports and date; its evidence, or None when invalid."""
     if not isinstance(flight, Mapping):
         _add_issue(issues, "flight.invalid", path, "Each flight must be an object.")
         return None
@@ -863,6 +867,10 @@ def _validate_map_day(
     *,
     expected_airport_name: str | None,
 ) -> None:
+    """One day's map: a FeatureCollection whose pins are exactly the day's stops
+    (airport, hotel, activities) in order, at their real coordinates, and whose
+    route lines match the day's route summary. A day without a map is skipped.
+    """
     daily_map = maps.get(day_number)
     path = f"maps[{day_number}]"
     if daily_map is None:
@@ -983,6 +991,10 @@ def _validate_map_routes(
     ordered_route_points: Sequence[_RoutePoint],
     route_features: Sequence[tuple[int, Mapping[str, Any]]],
 ) -> None:
+    """The map's route lines against the day's ``route`` summary: the same
+    profiles and metrics, the same ordered stops, and each line starting and
+    ending at the first and last pin.
+    """
     expected_profiles: dict[str, tuple[float, float]] = {}
     expected_stops: list[str] = []
     route_shape_valid = True

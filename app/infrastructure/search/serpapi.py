@@ -1,4 +1,8 @@
-"""Reusable SerpAPI HTTP client infrastructure."""
+"""SerpAPI HTTP client, shared by every SerpAPI-backed provider.
+
+Each provider gets its own instance (and HTTP session), so one feature's
+traffic or failures never hold up another's.
+"""
 
 from __future__ import annotations
 
@@ -22,6 +26,8 @@ _SERPAPI_URL: Final = (
 _REQUEST_TIMEOUT_SECONDS: Final = 15.0
 
 
+# Retries connection problems, rate limits and server errors on GET,
+# honouring Retry-After.
 _RETRY_STRATEGY = Retry(
     total=3,
     connect=3,
@@ -73,7 +79,7 @@ def _build_http_session(
 
 
 class SerpApiClient:
-    """Injected-key HTTP adapter for one SerpAPI credential."""
+    """One SerpAPI key and its own HTTP session."""
 
     def __init__(
         self,
@@ -124,6 +130,8 @@ class SerpApiClient:
             Any,
         ],
     ) -> dict[str, Any]:
+        """The response JSON. Raises ``SerpApiUnavailableError`` on any HTTP,
+        transport or parsing failure (the key is added here, never logged)."""
 
         request_params = dict(
             params

@@ -201,7 +201,7 @@ def _allocation_change(
 ) -> dict[str, float] | None:
     """The newest category budget, if valid and different from the current one.
 
-    The old node trusted the tool message's allocation as-is.
+    The tool message's allocation is validated again here, never trusted as-is.
     """
 
     raw = None
@@ -265,8 +265,8 @@ async def _incremental_candidate(
 
     try:
         if affected:
-            # Only the changed days are routed again (the old node re-routed
-            # every day of the trip, one paid directions call per day).
+            # Only the changed days are routed again: each routed day is a paid
+            # directions call.
             routed = await asyncio.to_thread(services.routes.build_daily_maps, itinerary, days=affected)
             itinerary = routed.itinerary
             maps.update(routed.daily_maps)

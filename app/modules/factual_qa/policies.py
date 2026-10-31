@@ -278,7 +278,7 @@ def apply_factual_policy(
 
     # A detected live/high-risk topic next to an action or recommendation is
     # verified first. Generic question words alone ("can you add...") are not
-    # a factual signal: they made edit commands look like fact questions.
+    # a factual signal: they would make edit commands look like fact questions.
     if detected is not None and request_type in {
         RequestType.ACTION,
         RequestType.RECOMMENDATION,

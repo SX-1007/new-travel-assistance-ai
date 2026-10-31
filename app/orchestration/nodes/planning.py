@@ -1,14 +1,13 @@
 """Planning nodes: currency setup, the validated transaction, its reply, promotion.
 
-Flow (7c wires it):
+Flow:
 
     process_initial_form ─┐
     prepare_planning_transaction ─┴→ execute_validated_transaction
         → generate_reviewed_response → promote_candidate (if a candidate)
 
 * ``execute_validated_transaction`` runs the whole bounded retry loop itself
-  (``workflows/planning.py``). The old graph retried by re-entering the node
-  up to three times through the router; a failed transaction is now final.
+  (``workflows/planning.py``); a failed transaction is final.
 * Everything plans against ``transaction_view(state)``, so pending
   requirement and budget changes stay private until ``promote_candidate``
   commits them together with the plan.
@@ -119,9 +118,8 @@ async def process_initial_form_node(
         financials = await asyncio.to_thread(_trip_financials, view, planning)
 
     except Exception:
-        # The old node let this exception fail the whole graph run. A
-        # provider failure must still stop planning (never a 1:1 rate), but
-        # as a normal "unavailable" outcome with a reply.
+        # A provider failure stops planning (never a 1:1 rate), but as a
+        # normal "unavailable" outcome with a reply, not a failed run.
         log_event(
             logger,
             "planning.initial_form",
@@ -343,7 +341,7 @@ async def promote_candidate_node(
             "total_convert_budget": float(view.total_convert_budget or 0.0),
             "budget_allocation": dict(view.budget_allocation),
             # Own copies, so the public fields and the snapshot never share
-            # nested objects (one copy each; the old node made four).
+            # nested objects.
             "draft_itinerary": copy.deepcopy(itinerary),
             "daily_map_info": copy.deepcopy(maps),
         },
@@ -403,7 +401,7 @@ def _promotion_issues(
 
 
 def _committed_fields(state: AgentState, candidate: Mapping[str, Any]) -> dict[str, Any]:
-    """Overrides to publish; a pre-migration candidate may carry its own."""
+    """Overrides to publish; a candidate saved by an earlier version may carry its own."""
 
     legacy = candidate.get("financials")
     legacy = {key: value for key, value in legacy.items() if key in OVERRIDABLE_FIELDS} if isinstance(legacy, Mapping) else {}

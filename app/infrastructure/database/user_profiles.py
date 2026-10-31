@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS user_profiles (
 )
 """
 
+# Serialises table creation across processes (each table has its own lock id).
 _SCHEMA_LOCK_SQL: Final[str] = "SELECT pg_advisory_xact_lock(794523018)"
 
 # Timestamps stay in the table; callers get only the profile fields, as

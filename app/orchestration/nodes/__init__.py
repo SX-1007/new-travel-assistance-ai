@@ -1,10 +1,10 @@
 """LangGraph node functions, grouped by concern.
 
 Each node is ``async (state, config, *, <services>) -> dict`` and returns
-only the fields it updates. ``build_nodes`` binds the services once (7c
-passes what ``bootstrap/container.py`` builds) and returns the nodes by
-graph name, each with the plain ``(state, config)`` signature LangGraph
-expects. Nothing here constructs a client or reads settings.
+only the fields it updates. ``build_nodes`` binds the services once (the
+container builds them) and returns the nodes by graph name, each with the
+plain ``(state, config)`` signature LangGraph expects. Nothing here
+constructs a client or reads settings.
 """
 
 from __future__ import annotations

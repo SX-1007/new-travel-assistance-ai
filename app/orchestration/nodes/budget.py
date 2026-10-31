@@ -3,17 +3,14 @@
 Flow: post-tool processing records one coherent budget proposal →
 ``assess_chat_budget`` runs the deterministic gate → on acceptance the new
 total, the confirmed assessment and the financials derived from it go into
-``plan_overrides`` and the planning transaction runs (the old plan stays
+``plan_overrides`` and the planning transaction runs (the current plan stays
 public until promotion) → otherwise ``budget_gate_response`` replies.
 
-The old graph spread acceptance over a five-stage record ("assessment" →
-"currency" → "itinerary" → "activities" → "maps" → "commit"), four of whose
-nodes had become shims, and re-read the assessment from Firestore right after
-the gate had verified it. Acceptance now builds the financials at once from
-the assessment's own exchange rate (no provider call).
-``resume_accepted_budget`` handles a checkpoint left with an accepted
-decision (an interrupted run, or any legacy stage): it re-verifies the
-assessment against the store before planning.
+Acceptance builds the financials at once from the assessment's own exchange
+rate (no provider call). ``resume_accepted_budget`` handles a checkpoint left
+with an accepted decision (an interrupted run, or a stage saved by an
+earlier version): it re-verifies the assessment against the store before
+planning.
 """
 
 from __future__ import annotations
@@ -55,7 +52,8 @@ from app.shared.observability import LogContext, log_event
 logger = logging.getLogger(__name__)
 
 # Stage of an accepted decision whose financials are already in
-# ``plan_overrides``. Any other (legacy) stage is rebuilt on resume.
+# ``plan_overrides``. Any other stage (saved by an earlier version) is
+# rebuilt on resume.
 ACCEPTED_STAGE_READY = "ready"
 
 
@@ -203,12 +201,11 @@ async def budget_gate_response_node(
 
 
 def budget_decision_pending(state: AgentState) -> bool:
-    """A recommendation awaits the user's answer: only the budget
-    interpreter may act until it is resolved.
+    """A recommendation awaits the user's answer: only the budget interpreter
+    may act until it is resolved.
 
-    The old graph also locked the session when a check was merely
-    unavailable with nothing pending, so every later message went to the
-    budget-only interpreter and the trip could no longer be discussed.
+    A check that was merely unavailable, with nothing pending, does not lock
+    the session: the trip can still be discussed normally.
     """
 
     return state.pending_budget_confirmation is not None

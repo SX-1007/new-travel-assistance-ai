@@ -73,7 +73,7 @@ def hotel_identity(hotel: HotelResult | Mapping[str, Any]) -> tuple[Any, ...]:
 
 
 def transportation_budget(allocation: Mapping[str, Any] | None) -> float:
-    """Canonical transportation cap; legacy checkpoints used "flight"."""
+    """The transportation cap; sessions saved by earlier versions call it "flight"."""
 
     if not isinstance(allocation, Mapping):
         return 0.0

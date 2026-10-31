@@ -49,10 +49,10 @@ def assessment_cache_key(
     base_currency: str,
     destination_currency: str,
 ) -> dict[str, Any]:
-    """Return the budget-independent identity of a trip assessment.
+    """The budget-independent identity of a trip's assessment.
 
-    The field names and normalisation are identical to the old application,
-    so assessments it cached are found again after the migration.
+    Its field names and normalisation must not change: they locate the
+    assessments already cached in Firestore.
     """
     return {
         "origin": trip.origin.strip().lower(),

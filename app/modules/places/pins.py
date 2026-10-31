@@ -2,12 +2,9 @@
 
 The chat UI pins ``[MAP: …]`` places by searching each name + address again
 instead of trusting coordinates the model copied into its reply (it garbles
-digits). The provider search is already cached across processes; a short
-in-process cache on top spares that store a round trip on every re-render.
-
-The old router cached every miss for the life of the process (a provider
-hiccup returning nothing stuck until restart) and had no lock around a
-cache shared by worker threads.
+digits). The provider search is already cached across processes; a short,
+lock-guarded in-process cache on top spares that store a round trip on every
+re-render. Misses expire too, so a provider hiccup never sticks.
 """
 
 from __future__ import annotations

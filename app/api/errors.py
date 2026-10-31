@@ -122,7 +122,7 @@ ERROR_RESPONSES: Final[Mapping[type[BaseException], ErrorResponse]] = {
         retry_after_seconds=30,
     ),
     google_errors.GoogleAPIError: _UPSTREAM_ERROR,
-    # The providers use ``requests``; the old map only knew ``httpx``.
+    # Search, map and currency providers use ``requests``; ``httpx`` covers the rest.
     requests.Timeout: _UPSTREAM_TIMEOUT,
     requests.RequestException: _UPSTREAM_ERROR,
     httpx.TimeoutException: _UPSTREAM_TIMEOUT,

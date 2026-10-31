@@ -21,9 +21,7 @@ class AgentState(BaseModel):
         arbitrary_types_allowed=True,
     )
 
-    # ─────────────────────────────────────────────────────
-    # Conversation history
-    # ─────────────────────────────────────────────────────
+    # ── Conversation history ──────────────────────────────────────────
 
     messages: Annotated[list[BaseMessage], add_messages] = Field(
         default_factory=list,
@@ -33,9 +31,7 @@ class AgentState(BaseModel):
         ),
     )
 
-    # ─────────────────────────────────────────────────────
-    # User origin
-    # ─────────────────────────────────────────────────────
+    # ── User origin ───────────────────────────────────────────────────
 
     origin_country: str | None = Field(
         default=None,
@@ -47,9 +43,7 @@ class AgentState(BaseModel):
         description="User's home state/province.",
     )
 
-    # ─────────────────────────────────────────────────────
-    # Trip inputs / resolved destination
-    # ─────────────────────────────────────────────────────
+    # ── Trip inputs / resolved destination ────────────────────────────
 
     country: str | None = Field(
         default=None,
@@ -87,9 +81,7 @@ class AgentState(BaseModel):
         description="Trip end date in YYYY-MM-DD format.",
     )
 
-    # ─────────────────────────────────────────────────────
-    # Currency conversion
-    # ─────────────────────────────────────────────────────
+    # ── Currency conversion ───────────────────────────────────────────
 
     base_currency_code: str | None = Field(
         default=None,
@@ -127,9 +119,7 @@ class AgentState(BaseModel):
         description="ISO 8601 UTC timestamp of the last exchange-rate fetch.",
     )
 
-    # ─────────────────────────────────────────────────────
-    # Provider-grounded budget gate
-    # ─────────────────────────────────────────────────────
+    # ── Provider-grounded budget gate ─────────────────────────────────
 
     budget_assessment: dict[str, Any] | None = Field(
         default=None,
@@ -186,9 +176,7 @@ class AgentState(BaseModel):
 
     chat_budget_assessment_id: str | None = None
 
-    # ─────────────────────────────────────────────────────
-    # Accepted plan / revision control
-    # ─────────────────────────────────────────────────────
+    # ── Accepted plan / revision control ──────────────────────────────
 
     plan_revision: int = Field(
         default=0,
@@ -214,9 +202,7 @@ class AgentState(BaseModel):
         ),
     )
 
-    # ─────────────────────────────────────────────────────
-    # Current itinerary / map state
-    # ─────────────────────────────────────────────────────
+    # ── Current itinerary / map state ─────────────────────────────────
 
     draft_itinerary: list[dict[str, Any]] = Field(
         default_factory=list,
@@ -232,9 +218,7 @@ class AgentState(BaseModel):
         ),
     )
 
-    # ─────────────────────────────────────────────────────
-    # Private planning transaction
-    # ─────────────────────────────────────────────────────
+    # ── Private planning transaction ──────────────────────────────────
 
     planning_outcome: Literal[
         "validated",
@@ -292,9 +276,7 @@ class AgentState(BaseModel):
         ),
     )
 
-    # ─────────────────────────────────────────────────────
-    # Current-turn factual Q&A
-    # ─────────────────────────────────────────────────────
+    # ── Current-turn factual Q&A ──────────────────────────────────────
 
     factual_route: dict[str, Any] | None = Field(
         default=None,

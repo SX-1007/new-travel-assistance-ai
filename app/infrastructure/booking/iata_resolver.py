@@ -31,6 +31,7 @@ _CACHE_SIZE: Final = 1024
 _CACHE_TTL_SECONDS: Final = 86_400
 
 
+# Common destinations, answered without a model call.
 _TOP_DESTINATIONS: Final[
     Mapping[str, str]
 ] = MappingProxyType(
@@ -156,6 +157,7 @@ class GeminiIataResolver:
             LookupError,
             IndexError,
         ):
+            # Not a country at all: remember the miss.
             with self._lock:
                 self._cache[
                     cache_key
@@ -180,8 +182,7 @@ class GeminiIataResolver:
                 "provider.iata.failed",
             )
 
-            # Transient failure:
-            # deliberately not cached.
+            # A model failure may be temporary: don't cache it.
             return None
 
         iata_code = (

@@ -42,17 +42,14 @@ def _log_error(event: str) -> None:
 
 
 class PgVectorSemanticPreferenceStore:
-    """
-    PostgreSQL/pgvector implementation of the
-    semantic-memory persistence contract.
-    """
+    """``mem0_vector``: each user's learned preference sentences, embedded."""
 
     def __init__(self, *, embedder: _Embedder) -> None:
         self._embedder = embedder
         self._dimension = int(embedder.dimension)
 
     def ensure_schema(self) -> None:
-        """RUN ONCE AT STARTUP: create the ``mem0_vector`` table and index."""
+        """Create the table and index (at startup; safe to repeat)."""
         ensure_vector_extension()
 
         with get_connection() as conn:

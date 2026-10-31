@@ -69,8 +69,8 @@ def chat_turn_response(result: TurnResult, *, now: datetime | None = None) -> Ch
     reply = turn_reply(messages)
 
     if state.get("planning_outcome") == "unavailable":
-        # The graph's own failure reply (already checked) says what was kept;
-        # the old router replaced it with a generic retry message.
+        # Prefer the graph's own failure reply (already reviewed): it says
+        # what was kept.
         return ChatPlanningUnavailableResponse(
             reason=planning_unavailable_reason(state),
             chat_reply=reply or PLANNING_UNAVAILABLE_MESSAGE,

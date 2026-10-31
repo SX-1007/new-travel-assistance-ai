@@ -77,7 +77,7 @@ def recover_itinerary_history(
     *,
     current_revision: int,
 ) -> list[dict[str, Any]]:
-    """Rebuild history from legacy checkpoints that predate the history field.
+    """Rebuild history for sessions saved before the history field existed.
 
     The current revision itself is excluded: history holds earlier ones only.
     """

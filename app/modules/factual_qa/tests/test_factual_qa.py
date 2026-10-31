@@ -76,7 +76,7 @@ def test_model_cannot_downgrade_a_visa_question():
 
 
 def test_live_words_never_weaken_a_stricter_authority():
-    # The old policy replaced OFFICIAL with ANY_CITED for "current" visa rules.
+    # "Current" must not lower a visa question from OFFICIAL to ANY_CITED.
     route = route_for(
         "What are the current visa rules?",
         classified(RequestType.FACTUAL, FactualDomain.VISA_ENTRY),

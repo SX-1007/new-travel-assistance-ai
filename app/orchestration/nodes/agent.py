@@ -1,6 +1,6 @@
 """The tool-calling agent, its bound tools, and the pending-budget interpreter.
 
-Tool choice (same set as the old graph, now explicit):
+Tool choice:
 
 * bound: alternatives search, place search, ``edit_itinerary``, nearby
   amenities, currency conversion, ``propose_budget_change``,
@@ -88,8 +88,9 @@ from app.shared.observability import LogContext, log_event
 
 logger = logging.getLogger(__name__)
 
-# Tool rounds per user turn. After that the agent must answer without tools;
-# the old graph ran until LangGraph's recursion limit failed the whole turn.
+# Tool rounds per user turn. After that the agent must answer without tools,
+# so a looping model ends with a reply instead of hitting LangGraph's
+# recursion limit and failing the turn.
 MAX_TOOL_ROUNDS: Final = 6
 
 _EDIT_CONTINUATION: Final = (
@@ -130,8 +131,9 @@ _EXECUTE_EDIT: Final = (
 
 @dataclass(frozen=True, slots=True)
 class AgentToolset:
-    """Tools per model; 7c builds one ToolNode for ``agent`` (it also serves
-    the edit-continuation model's calls) and one for ``budget_decision``."""
+    """Tools per model. The graph builds one ToolNode for ``agent`` (it also
+    serves the edit-continuation model's calls) and one for ``budget_decision``.
+    """
 
     agent: tuple[BaseTool, ...]
     edit: tuple[BaseTool, ...]

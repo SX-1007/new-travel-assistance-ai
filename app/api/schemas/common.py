@@ -35,6 +35,7 @@ class PlanningUnavailableResponse(BaseModel):
 
     retryable: Literal[True] = True
 
+    # Always null: the frontend expects these keys on every form response.
     itinerary: None = None
     daily_geojson_maps: None = None
 
