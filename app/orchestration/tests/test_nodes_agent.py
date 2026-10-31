@@ -2,6 +2,7 @@
 
 from langchain_core.messages import AIMessage, HumanMessage
 
+from app.modules.output_review.policies import claims_unconfirmed_success
 from app.orchestration.edit_intent import DAY_CLARIFICATION_MARKER
 from app.orchestration.nodes.agent import (
     AgentModels,
@@ -14,8 +15,10 @@ from app.orchestration.nodes.replies import (
     BUDGET_DECISION_UNAVAILABLE_TEXT,
     EDIT_NOT_SAVED,
     GENERIC_UNVERIFIED,
+    MUTATION_TARGET_REQUIRED,
     MUTATION_TARGET_REQUIRED_TEXT,
     SERVER_OWNED_KEY,
+    mutation_choice_text,
 )
 from app.orchestration.tests.node_fakes import (
     CONFIG,
@@ -90,8 +93,62 @@ def test_after_a_search_the_edit_only_model_must_call_the_edit_tool():
         edit=FakeModel("Sure, which slot?"),
     )
 
-    assert update["messages"][0].content == MUTATION_TARGET_REQUIRED_TEXT
+    [message] = update["messages"]
+    assert message.content == mutation_choice_text(["Ueno Park"], day=2)
+    assert message.additional_kwargs[SERVER_OWNED_KEY] == MUTATION_TARGET_REQUIRED
     assert len(models.edit.calls) == 1
+
+
+def test_an_open_ended_swap_the_model_did_not_apply_offers_the_unplanned_results():
+    # The live case (B12): the user left the new place open, the search
+    # found options, and the edit model still made no call.
+    results = [{"name": name} for name in ("Tokyo Tower", "Senso-ji", "Tokyo Skytree", "Ueno Zoo", "Ginza Six")]
+    messages = tool_turn(
+        "Please remove the first activity on day 2 and replace it with something else.",
+        "search_places",
+        {"results": results},
+        query="attraction in Tokyo",
+    )
+    update, _, _, _ = call_agent(
+        committed_state(*messages),
+        agent=FakeModel("Which one would you like?"),
+        edit=FakeModel("Which one would you like?"),
+    )
+
+    reply = update["messages"][0].content
+    # Places already in the plan are not offered; at most three are.
+    assert reply.startswith("I found Tokyo Skytree, Ueno Zoo or Ginza Six,")
+    assert "Tokyo Tower" not in reply and "Senso-ji" not in reply
+    # The example names the user's day, so replying with it authorizes the edit.
+    assert '"On day 2, replace activity 1 with Tokyo Skytree."' in reply
+    assert update["output_review_issue_codes"] == ["mutation.tool_call_missing"]
+
+
+def test_without_new_options_the_target_question_is_generic():
+    messages = tool_turn(
+        "replace the first activity on day 2 with something else",
+        "search_places",
+        {"results": [{"name": "Tokyo Tower"}]},
+        query="attraction",
+    )
+    update, _, _, _ = call_agent(
+        committed_state(*messages),
+        agent=FakeModel("Which one?"),
+        edit=FakeModel("Which one?"),
+    )
+
+    assert update["messages"][0].content == MUTATION_TARGET_REQUIRED_TEXT
+
+
+def test_the_choice_question_passes_the_no_false_success_rule():
+    # server_reply swaps in a generic fallback when the deterministic rules
+    # reject fixed text; the question must never read as a saved change.
+    for day in (None, 3):
+        assert not claims_unconfirmed_success(mutation_choice_text(["Ueno Zoo", "Ginza Six"], day=day))
+
+    assert not claims_unconfirmed_success(MUTATION_TARGET_REQUIRED_TEXT)
+    assert mutation_choice_text([]) == MUTATION_TARGET_REQUIRED_TEXT
+    assert mutation_choice_text(["Ueno Zoo"]).startswith("I found Ueno Zoo, and")
 
 
 def test_a_rejected_reply_is_rewritten_once_with_the_feedback():

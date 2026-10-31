@@ -100,12 +100,14 @@ MUTATION_MODEL_UNAVAILABLE_TEXT: Final = (
     "I found matching place options, but I could not complete the itinerary "
     "update right now. Please try the modification again."
 )
+# The old text asked for "the item number" even when the user had given the
+# day and position, so it read as if the request had not been understood.
 MUTATION_TARGET_REQUIRED_TEXT: Final = (
-    "I found matching place options, but I still need the exact itinerary target "
-    "before I can save the change safely. Please specify the day and whether you "
-    "want to add or replace an activity/restaurant; include the item number if "
-    "you want to replace an existing item."
+    "I looked for places but couldn't choose one safely, so your itinerary has "
+    "not been changed. Tell me the day, which item to change (for example "
+    "\"activity 1\") and the place you'd like instead."
 )
+_MAX_CHOICES: Final = 3
 BUDGET_DECISION_UNAVAILABLE_TEXT: Final = (
     "I could not interpret that budget reply. Please confirm the recommended "
     "amount, provide another positive amount, or request a refreshed "
@@ -265,6 +267,26 @@ def server_reply(
     return AIMessage(content=text, additional_kwargs={SERVER_OWNED_KEY: marker})
 
 
+def mutation_choice_text(option_names: Sequence[str], *, day: int | None = None) -> str:
+    """The "which place?" question when a search found options but no edit
+    was made: the user picks from what was found instead of starting over."""
+
+    names = list(dict.fromkeys(name.strip() for name in option_names if name and name.strip()))[:_MAX_CHOICES]
+
+    if not names:
+        return MUTATION_TARGET_REQUIRED_TEXT
+
+    listed = names[0] if len(names) == 1 else f"{', '.join(names[:-1])} or {names[-1]}"
+    # The reply must name the day again: only a day the user states can
+    # authorize a remove or replace.
+    example = f"On day {day or 1}, replace activity 1 with {names[0]}."
+
+    return (
+        f"I found {listed}, and your itinerary has not been changed yet. Which one "
+        f"would you like? Reply with the day and the item, for example: \"{example}\""
+    )
+
+
 def unverified_reply_text(state: AgentState) -> str:
     """Fallback when no model reply passed review (no plan was built)."""
 
@@ -316,6 +338,7 @@ __all__ = [
     "SERVER_OWNED_KEY",
     "ChatModel",
     "ReplyServices",
+    "mutation_choice_text",
     "planning_failure_text",
     "server_reply",
     "unverified_reply_text",

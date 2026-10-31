@@ -156,6 +156,28 @@ def trusted_place_options(messages: Sequence[BaseMessage]) -> list[dict[str, Any
     return options
 
 
+def unplanned_place_names(state: AgentState) -> list[str]:
+    """Names of this turn's place results that aren't in the itinerary yet,
+    in the provider's order."""
+
+    planned = {
+        name.strip().casefold()
+        for day in state.draft_itinerary or ()
+        if isinstance(day, Mapping)
+        for activity in day.get("activities") or ()
+        if isinstance(activity, Mapping) and isinstance(name := activity.get("name"), str)
+    }
+    names: list[str] = []
+
+    for option in trusted_place_options(state.messages):
+        name = option.get("name")
+
+        if isinstance(name, str) and name.strip() and name.strip().casefold() not in planned:
+            names.append(name.strip())
+
+    return names
+
+
 def trusted_booking_options(messages: Sequence[BaseMessage]) -> list[TrustedBookingOption]:
     """Flight/hotel options from this turn's ``search_alternative_opt`` calls,
     bound to the category and day the assistant asked for."""
@@ -477,4 +499,5 @@ __all__ = [
     "recover_place_options",
     "trusted_booking_options",
     "trusted_place_options",
+    "unplanned_place_names",
 ]

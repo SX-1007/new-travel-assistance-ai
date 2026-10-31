@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: str = Field(
         ..., min_length=1, description="Primary Gemini API key (required)"
     )
+    # Backup key: every task falls back to it, on the same model, when its
+    # own key fails (outage, exhausted quota, malformed answer).
+    GEMINI_API_KEY_2: str = ""
     GEMINI_IATA_API: str = ""
     GEMINI_FLIGHTS_HOTELS: str = ""
     GEMINI_EXTRACTOR_API: str = ""
@@ -45,6 +48,18 @@ class Settings(BaseSettings):
     GEMINI_CHAT_MODEL: str = "gemini-3.1-flash-lite"
     GEMINI_UTILITY_MODEL: str = "gemini-3.1-flash-lite"
     GEMINI_EMBED_MODEL: str = "gemini-embedding-2"
+    # Calls allowed per minute for each key and chat model, matching
+    # Google's quota (15 on the free tier). Extra calls wait for a free slot
+    # instead of failing with 429. 0 turns pacing off.
+    GEMINI_REQUESTS_PER_MINUTE: int = Field(default=15, ge=0)
+
+    # ── OpenRouter (last-resort backup) ─────────────────────────────
+    # Tried after the Gemini keys. Free models are shared and often busy,
+    # and allow 50 requests a day without purchased credits.
+    OPENROUTER_API_KEY: str = ""
+    OPENROUTER_MODEL: str = "google/gemma-4-31b-it:free"
+    # OpenRouter's free models allow 20 per minute per account.
+    OPENROUTER_REQUESTS_PER_MINUTE: int = Field(default=20, ge=0)
 
     # ── PostgreSQL ───────────────────────────────────────────────────
     # Profiles, checkpoints, session ownership and pgvector tables. Use a

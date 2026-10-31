@@ -14,6 +14,7 @@ from app.infrastructure.activities.idea_generator import (
     _RawPlan,
     _to_ideas,
 )
+from app.infrastructure.llm.chat import ChatBackend
 from app.modules.activities.models import (
     ActivityPlanRequest,
     ActivityPreferences,
@@ -374,7 +375,7 @@ def test_invalid_llm_ideas_are_dropped_individually():
 
 
 def test_rescue_keeps_only_requested_days():
-    generator = GeminiActivityIdeaGenerator(api_key="key", model="model")
+    generator = GeminiActivityIdeaGenerator(backends=(ChatBackend("gemini", "key", "model"),))
     generator._rescue = SimpleNamespace(
         invoke=lambda inputs: _RawPlan(
             places=[

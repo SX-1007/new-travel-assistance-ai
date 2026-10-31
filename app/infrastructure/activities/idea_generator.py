@@ -14,7 +14,7 @@ from typing import Any
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field, ValidationError
 
-from app.infrastructure.llm.gemini import build_gemini_chat_model
+from app.infrastructure.llm.chat import ChatBackend, build_chat_model
 from app.modules.activities.models import IdeaRequest, PlaceIdea
 from app.shared.logging import safe_log
 
@@ -181,13 +181,11 @@ class GeminiActivityIdeaGenerator:
     def __init__(
         self,
         *,
-        api_key: str,
-        model: str,
+        backends: Sequence[ChatBackend],
         temperature: float = 0.4,
     ) -> None:
-        llm = build_gemini_chat_model(
-            api_key=api_key,
-            model=model,
+        llm = build_chat_model(
+            backends,
             temperature=temperature,
             max_retries=2,
         ).with_structured_output(_RawPlan)

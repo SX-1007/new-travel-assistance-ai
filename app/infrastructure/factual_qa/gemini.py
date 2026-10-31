@@ -6,12 +6,12 @@ Each adapter owns its own model client; none is built at import time.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from app.infrastructure.llm.gemini import build_gemini_chat_model
+from app.infrastructure.llm.chat import ChatBackend, build_chat_model
 from app.modules.factual_qa.models import GroundingReview, RequestClassification
 from app.modules.factual_qa.prompts import (
     ANSWER_SYSTEM_PROMPT,
@@ -29,10 +29,9 @@ def _messages(system: str, payload: Mapping[str, Any]) -> list[Any]:
 
 
 class GeminiRequestClassifier:
-    def __init__(self, *, api_key: str, model: str) -> None:
-        self._llm = build_gemini_chat_model(
-            api_key=api_key,
-            model=model,
+    def __init__(self, *, backends: Sequence[ChatBackend]) -> None:
+        self._llm = build_chat_model(
+            backends,
             temperature=0.0,
             # Rules take over on failure, so don't wait on retries.
             max_retries=1,
@@ -47,10 +46,9 @@ class GeminiRequestClassifier:
 
 
 class GeminiFactualAnswerWriter:
-    def __init__(self, *, api_key: str, model: str) -> None:
-        self._llm = build_gemini_chat_model(
-            api_key=api_key,
-            model=model,
+    def __init__(self, *, backends: Sequence[ChatBackend]) -> None:
+        self._llm = build_chat_model(
+            backends,
             temperature=0.1,
             max_retries=2,
             thinking_budget=0,
@@ -62,10 +60,9 @@ class GeminiFactualAnswerWriter:
 
 
 class GeminiGroundingReviewer:
-    def __init__(self, *, api_key: str, model: str) -> None:
-        self._llm = build_gemini_chat_model(
-            api_key=api_key,
-            model=model,
+    def __init__(self, *, backends: Sequence[ChatBackend]) -> None:
+        self._llm = build_chat_model(
+            backends,
             temperature=0.0,
             max_retries=1,
             thinking_budget=0,

@@ -30,10 +30,12 @@ from app.modules.budget.ports import CurrencyProviderPort
 from app.modules.factual_qa.service import FactualQAService
 from app.orchestration.edit_intent import (
     DAY_CLARIFICATION_MARKER,
+    day_numbers,
     is_explicit_edit_request,
     pending_mutation_instruction,
     pending_mutation_record,
     place_edit_day_clarification,
+    unplanned_place_names,
 )
 from app.orchestration.messages import (
     current_turn,
@@ -54,10 +56,10 @@ from app.orchestration.nodes.replies import (
     MUTATION_MODEL_UNAVAILABLE,
     MUTATION_MODEL_UNAVAILABLE_TEXT,
     MUTATION_TARGET_REQUIRED,
-    MUTATION_TARGET_REQUIRED_TEXT,
     REPLY_UNVERIFIED,
     ChatModel,
     ReplyServices,
+    mutation_choice_text,
     server_reply,
     unverified_reply_text,
     write_reply,
@@ -100,7 +102,12 @@ _EDIT_CONTINUATION: Final = (
     "user before the proposal. Never use an assistant-only guessed day. If no "
     "authorized day exists, ask exactly one concise clarification question and do "
     "not call edit_itinerary. Otherwise, call edit_itinerary using the exact "
-    "provider-grounded result or results. If the current request contains "
+    "provider-grounded result or results. If the user left the new place open "
+    "(\"something else\", \"anything\", \"you choose\"), the choice is yours and "
+    "needs no further confirmation: use the best-rated result that is not already "
+    "in the itinerary and fits the user's preferences. \"The first/second/last "
+    "activity\" on a day is that day's [1]/[2]/last [n]; \"remove X and replace it "
+    "with …\" is one replace. If the current request contains "
     "multiple edits, include EVERY requested edit in ONE edit_itinerary call; do "
     "not apply only the first change. Do not output JSON, raw tool data, or a "
     "prose success message."
@@ -255,11 +262,15 @@ async def agent_node(
 
             if searched:
                 # The edit-only model still made no call; a tool-less rewrite
-                # loop cannot produce the edit, so ask for the target.
+                # loop cannot produce the edit, so offer what the search found.
                 _log(log_context, "agent_mutation_retry", "clarification_required", "mutation.tool_call_missing")
+                days = day_numbers(latest_user_request(state.messages))
                 return _server_only(
                     state,
-                    MUTATION_TARGET_REQUIRED_TEXT,
+                    mutation_choice_text(
+                        unplanned_place_names(state),
+                        day=next(iter(days)) if len(days) == 1 else None,
+                    ),
                     MUTATION_TARGET_REQUIRED,
                     replies,
                     log_context,

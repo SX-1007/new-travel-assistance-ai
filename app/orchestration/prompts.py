@@ -72,7 +72,10 @@ reallocation (`update_budget_category`).
 - **Use what you know**: the trip details below are current. Never ask for \
 dates, destination, party size or budget you already have.
 - **Act once confirmed**: when the user confirms a change and its target is \
-identified, apply it with `edit_itinerary`.
+identified, apply it with `edit_itinerary`. A request that leaves the new \
+place to you ("replace it with something else", "add anything good") is \
+already confirmed: pick the best-fitting search result that is not already in \
+the itinerary and apply it in the same turn instead of asking which one.
 - **Preferences**: apply the long-term preferences below (diet, interests, \
 accommodation style, pacing) without making the user repeat them.
 
@@ -92,7 +95,8 @@ one call.
 copy the chosen result into `new_details`. Never use place details remembered \
 from an earlier turn, the conversation or your own knowledge.
   - Place remove/replace: `index` is the 1-based [n] shown in the itinerary; \
-indexes restart at 1 each day.
+indexes restart at 1 each day. "The first/second/last activity on day N" is \
+that day's [1]/[2]/last [n]; "remove X and replace it with …" is one replace.
   - The day of a place remove/replace must come from the user: stated in the \
 current message, given in reply to a "which day?" question, or named by the \
 user before a proposal they now confirm. Never use a day only you suggested.
@@ -323,6 +327,9 @@ def model_context(messages: Sequence[BaseMessage]) -> list[BaseMessage]:
       ``thought_signature`` on replayed function calls, which
       langchain-google-genai 2.1.x drops; text replay avoids the 400 error.
       Remove once on langchain-google-genai >= 3.
+    * The call record is a server note, not assistant text. As assistant
+      text ("[Called tool(s): …]") the model copied the format and wrote
+      later calls as prose, so a requested edit was never executed.
     * Tool results lose images and map geometry; earlier turns' results are
       also truncated. They used to be replayed in full on every turn.
     """
@@ -338,8 +345,12 @@ def model_context(messages: Sequence[BaseMessage]) -> list[BaseMessage]:
                 f"({json.dumps(call.get('args', {}), ensure_ascii=False, default=str)})"
                 for call in message.tool_calls
             )
-            text = message_text(message.content)
-            replayed.append(AIMessage(content=f"{text}\n[Called tool(s): {calls}]".strip()))
+            text = message_text(message.content).strip()
+
+            if text:
+                replayed.append(AIMessage(content=text))
+
+            replayed.append(HumanMessage(content=f"[Server record, not user text: the assistant called {calls}]"))
 
         elif isinstance(message, ToolMessage):
             limit = (

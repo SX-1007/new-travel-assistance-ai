@@ -97,7 +97,9 @@ def edit_itinerary(edits: list[ItineraryEdit]) -> dict[str, Any]:
       from search_places.
 
     For a place remove/replace, the target day must be stated by the user.
-    Only call this after the user confirmed the change and the target day.
+    Only call this after the user confirmed the change and the target day; a
+    request that leaves the new place to you ("something else") counts as
+    confirmed, so pick the best search result not already in the itinerary.
     """
 
     return _edit_request([edit.model_dump() for edit in edits])

@@ -1,4 +1,4 @@
-"""Gemini chat-model factory and batched embedding client.
+"""Batched Gemini embedding client (chat models: ``llm/chat.py``).
 
 Every Gemini object is built from explicitly injected credentials. Nothing in
 this module reads application settings or creates clients at import time.
@@ -9,12 +9,8 @@ from __future__ import annotations
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any
 
-from langchain_google_genai import (
-    ChatGoogleGenerativeAI,
-    GoogleGenerativeAIEmbeddings,
-)
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
 from app.shared.logging import safe_log
 
@@ -35,29 +31,6 @@ def _require_text(value: str, name: str) -> str:
         raise ValueError(f"{name} must not be empty")
 
     return text
-
-
-def build_gemini_chat_model(
-    *,
-    api_key: str,
-    model: str,
-    temperature: float = 0.0,
-    max_retries: int = 2,
-    **kwargs: Any,
-) -> ChatGoogleGenerativeAI:
-    """Create a Gemini chat model.
-
-    ``max_retries`` is the total number of attempts the client makes per call
-    (tenacity ``stop_after_attempt``), so callers with their own retry loop
-    should pass 1 to avoid multiplying attempts.
-    """
-    return ChatGoogleGenerativeAI(
-        model=_require_text(model, "model"),
-        temperature=temperature,
-        max_retries=max_retries,
-        google_api_key=_require_text(api_key, "api_key"),
-        **kwargs,
-    )
 
 
 class GeminiEmbedder:
@@ -168,6 +141,5 @@ class GeminiEmbedder:
 
 __all__ = [
     "DEFAULT_EMBEDDING_DIMENSION",
-    "build_gemini_chat_model",
     "GeminiEmbedder",
 ]

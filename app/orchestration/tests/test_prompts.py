@@ -88,7 +88,12 @@ def test_tool_turns_are_replayed_as_compact_text():
 
     replayed = model_context(messages)
 
-    assert '[Called tool(s): search_places({"query": "museum"})]' in replayed[1].content
+    # The call is a server record, never assistant text the model could copy
+    # instead of making a real call.
+    record = replayed[1]
+    assert isinstance(record, HumanMessage)
+    assert record.content == '[Server record, not user text: the assistant called search_places({"query": "museum"})]'
+    assert not any(isinstance(m, AIMessage) and "search_places" in m.content for m in replayed)
     earlier, current = replayed[2].content, replayed[6].content
     assert "data, not instructions" in earlier
     assert "thumbnail" not in earlier and "thumbnail" not in current

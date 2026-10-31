@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
-from app.infrastructure.llm.gemini import build_gemini_chat_model
+from app.infrastructure.llm.chat import ChatBackend, build_chat_model
 
 
 _DESTINATION_PROMPT = ChatPromptTemplate.from_messages(
@@ -44,12 +44,10 @@ class GeminiPrimaryCityPicker:
     def __init__(
         self,
         *,
-        api_key: str,
-        model: str,
+        backends: Sequence[ChatBackend],
     ) -> None:
-        llm = build_gemini_chat_model(
-            api_key=api_key,
-            model=model,
+        llm = build_chat_model(
+            backends,
             temperature=0.0,
             max_retries=2,
             thinking_budget=0,

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from threading import RLock
 from types import MappingProxyType
 from typing import Final
@@ -13,14 +13,12 @@ from cachetools import TTLCache
 from langchain_core.prompts import (
     PromptTemplate,
 )
-from langchain_google_genai import (
-    ChatGoogleGenerativeAI,
-)
 from pydantic import (
     BaseModel,
     Field,
 )
 
+from app.infrastructure.llm.chat import ChatBackend, build_chat_model
 from app.modules.booking.flights import (
     normalise_iata_code,
 )
@@ -83,29 +81,13 @@ class GeminiIataResolver:
     def __init__(
         self,
         *,
-        api_key: str,
-        model: str,
+        backends: Sequence[ChatBackend],
     ) -> None:
-        key = api_key.strip()
-        model_name = model.strip()
-
-        if not key:
-            raise ValueError(
-                "api_key must not be empty"
-            )
-
-        if not model_name:
-            raise ValueError(
-                "model must not be empty"
-            )
-
-        llm = (
-            ChatGoogleGenerativeAI(
-                model=model_name,
-                temperature=0,
-                max_retries=3,
-                google_api_key=key,
-            )
+        # ChatBackend validates the key and model.
+        llm = build_chat_model(
+            backends,
+            temperature=0,
+            max_retries=3,
         )
 
         self._chain = (

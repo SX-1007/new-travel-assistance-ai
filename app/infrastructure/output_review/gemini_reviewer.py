@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
-from app.infrastructure.llm.gemini import build_gemini_chat_model
+from app.infrastructure.llm.chat import ChatBackend, build_chat_model
 from app.modules.output_review.models import OutputReviewDecision, SemanticIssueCode
 from app.modules.output_review.prompts import REVIEWER_SYSTEM_PROMPT
 
@@ -28,10 +28,9 @@ class _ReviewerOutput(BaseModel):
 class GeminiOutputReviewer:
     """Ask Gemini to judge a reply; it never sees tools or writes replies."""
 
-    def __init__(self, *, api_key: str, model: str) -> None:
-        llm = build_gemini_chat_model(
-            api_key=api_key,
-            model=model,
+    def __init__(self, *, backends: Sequence[ChatBackend]) -> None:
+        llm = build_chat_model(
+            backends,
             temperature=0.0,
             # The caller falls back on failure; one retry is enough.
             max_retries=1,

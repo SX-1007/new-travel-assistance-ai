@@ -17,6 +17,7 @@ import logging
 from functools import lru_cache, partial
 from typing import Any
 
+from langchain_core.rate_limiters import BaseRateLimiter
 from langchain_core.runnables import Runnable
 
 from app.infrastructure.activities.idea_generator import (
@@ -72,9 +73,18 @@ from app.infrastructure.factual_qa.gemini import (
 from app.infrastructure.factual_qa.web_search import (
     SerpApiWebSearch,
 )
+from app.infrastructure.llm.chat import (
+    ChatBackend,
+    build_chat_model,
+)
 from app.infrastructure.llm.gemini import (
     GeminiEmbedder,
-    build_gemini_chat_model,
+)
+from app.infrastructure.llm.health import (
+    BackendHealth,
+)
+from app.infrastructure.llm.rate_limit import (
+    SlidingWindowRateLimiter,
 )
 from app.infrastructure.maps.directions import (
     MapboxDirectionsClient,
@@ -177,6 +187,81 @@ def _settings() -> Settings:
     return get_settings()
 
 
+# ── Gemini pacing ───────────────────────────────────────────────────
+
+
+@lru_cache(maxsize=None)
+def get_gemini_rate_limiter(api_key: str, model: str) -> BaseRateLimiter | None:
+    """The one limiter for a key and model.
+
+    Google counts the quota per project and model, so every client that uses
+    the same key and model must share one limiter, whatever task it serves.
+    """
+
+    requests_per_minute = _settings().GEMINI_REQUESTS_PER_MINUTE
+
+    if requests_per_minute == 0:
+        return None
+
+    return SlidingWindowRateLimiter(max_requests=requests_per_minute)
+
+
+@lru_cache(maxsize=1)
+def get_openrouter_rate_limiter() -> BaseRateLimiter | None:
+    """One limiter for the OpenRouter account: its free-model limit is per
+    account, across models."""
+
+    requests_per_minute = _settings().OPENROUTER_REQUESTS_PER_MINUTE
+
+    if requests_per_minute == 0:
+        return None
+
+    return SlidingWindowRateLimiter(max_requests=requests_per_minute)
+
+
+@lru_cache(maxsize=None)
+def get_backend_health(provider: str, api_key: str, model: str) -> BackendHealth:
+    """One cooldown record per provider, key and model, shared by every task:
+    when a quota runs out, it runs out for all of them."""
+
+    return BackendHealth(provider=provider, model=model)
+
+
+def _chat_backends(api_key: str, model: str) -> tuple[ChatBackend, ...]:
+    """A task's own Gemini key, then the backups in order: the second Gemini
+    key on the same model, then OpenRouter. Unset backups are skipped."""
+
+    settings = _settings()
+    keys = [api_key]
+
+    if settings.GEMINI_API_KEY_2 and settings.GEMINI_API_KEY_2 != api_key:
+        keys.append(settings.GEMINI_API_KEY_2)
+
+    backends = [
+        ChatBackend(
+            "gemini",
+            key,
+            model,
+            get_gemini_rate_limiter(key, model),
+            get_backend_health("gemini", key, model),
+        )
+        for key in keys
+    ]
+
+    if settings.OPENROUTER_API_KEY:
+        backends.append(
+            ChatBackend(
+                "openrouter",
+                settings.OPENROUTER_API_KEY,
+                settings.OPENROUTER_MODEL,
+                get_openrouter_rate_limiter(),
+                get_backend_health("openrouter", settings.OPENROUTER_API_KEY, settings.OPENROUTER_MODEL),
+            )
+        )
+
+    return tuple(backends)
+
+
 # ── Storage ─────────────────────────────────────────────────────────
 
 
@@ -262,9 +347,8 @@ def get_memory_extraction_chain() -> Runnable:
     settings = _settings()
 
     return build_extraction_chain(
-        build_gemini_chat_model(
-            api_key=settings.effective_extractor_api_key,
-            model=settings.GEMINI_UTILITY_MODEL,
+        build_chat_model(
+            _chat_backends(settings.effective_extractor_api_key, settings.GEMINI_UTILITY_MODEL),
             temperature=0.0,
             # extraction.py owns the retry loop; one attempt per loop pass.
             max_retries=1,
@@ -371,14 +455,7 @@ def get_flight_search_provider(
         client=get_flight_search_client(),
 
         iata_resolver=GeminiIataResolver(
-            api_key=(
-                settings
-                .effective_iata_api_key
-            ),
-            model=(
-                settings
-                .GEMINI_UTILITY_MODEL
-            ),
+            backends=_chat_backends(settings.effective_iata_api_key, settings.GEMINI_UTILITY_MODEL),
         ),
 
         cache=FirebaseBookingSearchCache(
@@ -409,8 +486,7 @@ def get_destination_city_picker() -> GeminiPrimaryCityPicker:
     settings = _settings()
 
     return GeminiPrimaryCityPicker(
-        api_key=settings.effective_destination_api_key,
-        model=settings.GEMINI_UTILITY_MODEL,
+        backends=_chat_backends(settings.effective_destination_api_key, settings.GEMINI_UTILITY_MODEL),
     )
 
 
@@ -520,8 +596,7 @@ def get_activity_idea_generator() -> GeminiActivityIdeaGenerator:
     settings = _settings()
 
     return GeminiActivityIdeaGenerator(
-        api_key=settings.effective_activities_api_key,
-        model=settings.GEMINI_CHAT_MODEL,
+        backends=_chat_backends(settings.effective_activities_api_key, settings.GEMINI_CHAT_MODEL),
     )
 
 
@@ -643,8 +718,7 @@ def get_output_reviewer() -> GeminiOutputReviewer:
     settings = _settings()
 
     return GeminiOutputReviewer(
-        api_key=settings.GEMINI_API_KEY,
-        model=settings.GEMINI_CHAT_MODEL,
+        backends=_chat_backends(settings.GEMINI_API_KEY, settings.GEMINI_CHAT_MODEL),
     )
 
 
@@ -676,8 +750,7 @@ def get_factual_request_classifier() -> GeminiRequestClassifier:
     settings = _settings()
 
     return GeminiRequestClassifier(
-        api_key=settings.GEMINI_API_KEY,
-        model=settings.GEMINI_UTILITY_MODEL,
+        backends=_chat_backends(settings.GEMINI_API_KEY, settings.GEMINI_UTILITY_MODEL),
     )
 
 
@@ -686,8 +759,7 @@ def get_factual_answer_writer() -> GeminiFactualAnswerWriter:
     settings = _settings()
 
     return GeminiFactualAnswerWriter(
-        api_key=settings.GEMINI_API_KEY,
-        model=settings.GEMINI_CHAT_MODEL,
+        backends=_chat_backends(settings.GEMINI_API_KEY, settings.GEMINI_CHAT_MODEL),
     )
 
 
@@ -696,8 +768,7 @@ def get_grounding_reviewer() -> GeminiGroundingReviewer:
     settings = _settings()
 
     return GeminiGroundingReviewer(
-        api_key=settings.GEMINI_API_KEY,
-        model=settings.GEMINI_UTILITY_MODEL,
+        backends=_chat_backends(settings.GEMINI_API_KEY, settings.GEMINI_UTILITY_MODEL),
     )
 
 
@@ -726,9 +797,8 @@ def get_chat_model() -> Any:
 
     settings = _settings()
 
-    return build_gemini_chat_model(
-        api_key=settings.GEMINI_API_KEY,
-        model=settings.GEMINI_CHAT_MODEL,
+    return build_chat_model(
+        _chat_backends(settings.GEMINI_API_KEY, settings.GEMINI_CHAT_MODEL),
         temperature=0.2,
         max_retries=3,
         # Minimal thinking for the tool-calling agent. It does not fix the
@@ -868,6 +938,9 @@ async def shutdown_graph() -> None:
 
 
 _ALL_GETTERS = (
+    get_gemini_rate_limiter,
+    get_openrouter_rate_limiter,
+    get_backend_health,
     get_new_trip_intake,
     get_onboarding_service,
     get_place_pin_locator,
