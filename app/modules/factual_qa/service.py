@@ -45,7 +45,7 @@ from app.modules.factual_qa.ports import (
     WebSearchPort,
 )
 from app.modules.factual_qa.retrieval import (
-    MAX_EVIDENCE_ITEMS,
+    SEARCH_RESULT_LIMIT,
     build_search_query,
     evidence_from_hits,
     usable_evidence,
@@ -117,7 +117,7 @@ class FactualQAService:
             return RetrievalResult(evidence=(), validation=EvidenceValidation(approved=True))
 
         try:
-            hits = self._search.search(build_search_query(route, trip), limit=MAX_EVIDENCE_ITEMS)
+            hits = self._search.search(build_search_query(route, trip), limit=SEARCH_RESULT_LIMIT)
         except Exception:
             safe_log(logger, logging.WARNING, "factual.search_failed")
             hits = []

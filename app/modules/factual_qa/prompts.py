@@ -40,6 +40,7 @@ Rules:
 5. Forecasts are forecasts, not certainties.
 6. Visa, entry, safety and health answers must keep the qualifications and
    conditions of the official evidence and never sound more certain than it.
+   When such a source has a source_date, say which date it is from.
 7. Be concise and answer directly. Do not mention routing, policy, evidence
    validation, JSON or system fields.
 8. When external evidence was required, end with a short "Sources:" section of

@@ -123,6 +123,12 @@ _TRIP_CONTEXT_DOMAINS: Final = frozenset(
         FactualDomain.FLIGHT_STATUS,
     }
 )
+# Entry and health rules are published as reference pages that stay in
+# force until the authority changes them. A page's date says when it was
+# written, not whether it still applies, so a page-age limit would reject
+# the current rule (a 2016 embassy page on visa exemption). Their safeguards
+# are official sources only, two separate sites and the grounding review.
+_STANDING_RULE_DOMAINS: Final = frozenset({FactualDomain.VISA_ENTRY, FactualDomain.HEALTH})
 _FACTUAL_TYPES: Final = frozenset(
     {RequestType.FACTUAL, RequestType.PREDICTION, RequestType.MIXED}
 )
@@ -156,9 +162,10 @@ DOMAIN_POLICIES: Final[Mapping[FactualDomain, DomainPolicy]] = {
     FactualDomain.TRANSIT_STATUS: DomainPolicy(
         RiskLevel.MEDIUM, True, RequiredAuthority.PRIMARY_OR_TRUSTED, 5, 1
     ),
-    FactualDomain.VISA_ENTRY: DomainPolicy(RiskLevel.HIGH, True, RequiredAuthority.OFFICIAL, _DAY, 2),
+    # Standing rules (see _STANDING_RULE_DOMAINS): no page-age limit.
+    FactualDomain.VISA_ENTRY: DomainPolicy(RiskLevel.HIGH, True, RequiredAuthority.OFFICIAL, None, 2),
     FactualDomain.TRAVEL_SAFETY: DomainPolicy(RiskLevel.HIGH, True, RequiredAuthority.OFFICIAL, 60, 2),
-    FactualDomain.HEALTH: DomainPolicy(RiskLevel.HIGH, True, RequiredAuthority.OFFICIAL, _DAY, 2),
+    FactualDomain.HEALTH: DomainPolicy(RiskLevel.HIGH, True, RequiredAuthority.OFFICIAL, None, 2),
     FactualDomain.CURRENCY: DomainPolicy(
         RiskLevel.LOW, True, RequiredAuthority.OFFICIAL_OR_TRUSTED, 60, 1
     ),
@@ -307,7 +314,8 @@ def apply_factual_policy(
         if not external:
             authority = RequiredAuthority.ANY_CITED
         external = True
-        freshness = min(freshness or 60, 60)
+        if domain not in _STANDING_RULE_DOMAINS:
+            freshness = min(freshness or 60, 60)
         minimum_sources = max(minimum_sources, 1)
 
     location_sensitive = raw.location_sensitive or domain in _LOCATION_SENSITIVE

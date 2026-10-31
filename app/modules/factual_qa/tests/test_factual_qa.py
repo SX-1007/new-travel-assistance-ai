@@ -27,6 +27,8 @@ from app.modules.factual_qa.policies import (
     rule_classification,
 )
 from app.modules.factual_qa.retrieval import (
+    MAX_EVIDENCE_ITEMS,
+    build_search_query,
     classify_source_authority,
     evidence_from_hits,
     is_stale,
@@ -87,6 +89,31 @@ def test_live_words_never_weaken_a_stricter_authority():
     assert weather.request_type is RequestType.PREDICTION
     assert weather.required_authority is RequiredAuthority.OFFICIAL_OR_TRUSTED
     assert weather.target_location == "Tokyo, Japan"
+
+
+@pytest.mark.parametrize(
+    ("message", "raw"),
+    [
+        ("Do I need a visa?", classified(RequestType.FACTUAL, FactualDomain.VISA_ENTRY)),
+        ("What are the current visa rules?", classified(RequestType.FACTUAL, FactualDomain.VISA_ENTRY)),
+        ("Do I need a visa?", classified(RequestType.FACTUAL, FactualDomain.VISA_ENTRY, time_sensitive=True)),
+        ("Do I need a yellow fever vaccination now?", classified(RequestType.FACTUAL, FactualDomain.HEALTH)),
+    ],
+)
+def test_entry_and_health_rules_have_no_page_age_limit(message, raw):
+    # A rule page's date says when it was written, not whether it still applies.
+    route = route_for(message, raw)
+
+    assert route.freshness_minutes is None
+    assert route.required_authority is RequiredAuthority.OFFICIAL and route.minimum_sources == 2
+
+
+def test_live_topics_keep_their_page_age_limit():
+    advisory = route_for("Is it safe to travel? Any travel advisory?", classified(RequestType.FACTUAL))
+    population = route_for("What is the population of Tokyo now?", classified(RequestType.FACTUAL))
+
+    assert advisory.domain is FactualDomain.TRAVEL_SAFETY and advisory.freshness_minutes == 60
+    assert population.freshness_minutes == 60
 
 
 def test_generic_live_fact_needs_a_cited_source():
@@ -168,6 +195,10 @@ def test_mixed_request_goes_to_agent_only_after_approved_evidence():
         ("https://www.reddit.com/r/japan", SourceAuthority.COMMUNITY),
         ("https://www.accuweather.com/tokyo", SourceAuthority.TRUSTED_PROVIDER),
         ("ftp://mofa.go.jp/visa", SourceAuthority.UNKNOWN),
+        ("https://kualalumpur.thaiembassy.org/en", SourceAuthority.OFFICIAL),
+        ("https://www.canada.ca/en/immigration", SourceAuthority.OFFICIAL),
+        ("https://www.thaiembassy.com/thailand-visa", SourceAuthority.SECONDARY),
+        ("https://thaiembassy.org.example.com/", SourceAuthority.SECONDARY),
     ],
 )
 def test_source_authority(url, authority):
@@ -218,6 +249,16 @@ def test_calendar_dates_are_judged_by_the_day():
     assert is_stale(item("https://a.go.jp", date="Oct 20, 2026"), route, NOW)
 
 
+def test_an_old_official_rule_page_still_counts_for_a_visa_question():
+    route = visa_route()
+    evidence = [
+        item("https://www.sf.us.emb-japan.go.jp/", date="Jun 21, 2016"),
+        item("https://www.mofa.go.jp/"),
+    ]
+
+    assert validate_factual_evidence(route, evidence, NOW).approved
+
+
 def test_hits_are_bounded_and_deduplicated():
     hits = [
         SearchHit(title="A" * 500, url="https://a.go.jp/x", snippet="  lots   of\nspace " + "s" * 900),
@@ -230,6 +271,51 @@ def test_hits_are_bounded_and_deduplicated():
     assert len(evidence) == 1
     assert len(evidence[0].title) == 200 and len(evidence[0].snippet) == 600
     assert evidence[0].snippet.startswith("lots of space")
+
+
+def test_the_weakest_hits_are_cut_and_the_rest_keep_search_order():
+    forums = [SearchHit(title="f", url=f"https://www.reddit.com/r/{n}", snippet="x") for n in range(5)]
+    blogs = [SearchHit(title="b", url=f"https://blog{n}.example.com/", snippet="x") for n in range(3)]
+    official = [SearchHit(title="o", url=f"https://{n}.go.jp/", snippet="x") for n in ("a", "b")]
+
+    evidence = evidence_from_hits(forums[:2] + blogs + forums[2:] + official, retrieved_at=NOW)
+
+    assert len(evidence) == MAX_EVIDENCE_ITEMS
+    assert [e.url for e in evidence][-2:] == ["https://a.go.jp/", "https://b.go.jp/"]
+    assert sum(e.authority is SourceAuthority.COMMUNITY for e in evidence) == 3
+    assert evidence[0].url == "https://www.reddit.com/r/0"
+
+
+def visa_route_for(message, **raw):
+    return route_for(message, classified(RequestType.FACTUAL, FactualDomain.VISA_ENTRY, **raw))
+
+
+def test_visa_query_is_phrased_like_official_pages():
+    query = build_search_query(visa_route_for("Do I need a visa as a Malaysian?"), TRIP)
+
+    assert query == "Japan visa requirements for citizens of Malaysia"
+    assert "official" not in query and "government" not in query
+
+
+def test_visa_query_uses_a_named_place_but_never_the_trip_city():
+    named = visa_route_for("Do I need a visa for Thailand?", target_location="Thailand")
+    trip_city = visa_route_for("Do I need a visa?", target_location="Tokyo, Japan", location_sensitive=True)
+
+    assert build_search_query(named, TRIP) == "Thailand visa requirements for citizens of Malaysia"
+    assert build_search_query(trip_city, TRIP) == "Japan visa requirements for citizens of Malaysia"
+
+
+def test_visa_query_keeps_the_kind_of_entry_rule():
+    route = visa_route_for("Do I need a transit visa or an e-visa?")
+
+    assert build_search_query(route, TRIP) == "Japan transit e-visa visa requirements for citizens of Malaysia"
+
+
+def test_visa_query_without_a_destination_keeps_the_question():
+    no_destination = TripContext(origin_country="Malaysia")
+    route = apply_factual_policy(classified(RequestType.FACTUAL), "Do I need a visa?", no_destination)
+
+    assert build_search_query(route, no_destination) == "Do I need a visa? citizens of Malaysia"
 
 
 # ── Service ─────────────────────────────────────────────────────────
@@ -322,7 +408,7 @@ def test_writer_sees_only_usable_evidence_and_answer_is_reviewed():
     assert "current_itinerary" not in payload["trip_context"]
     assert "review" in fakes.calls
     search_query = next(c[1] for c in fakes.calls if isinstance(c, tuple) and c[0] == "search")
-    assert "citizen of Malaysia" in search_query and "travel to Japan" in search_query
+    assert search_query == "Japan visa requirements for citizens of Malaysia"
 
 
 def test_grounding_rejection_returns_the_safe_message():
@@ -400,6 +486,48 @@ def test_web_search_parses_answer_box_then_organic_results():
     assert [h.url for h in hits] == ["https://a.go.jp", "https://b.go.jp"]
     assert hits[1].source_date == "2 hours ago"
     assert "location" not in client.params
+
+
+def test_web_search_recovers_the_site_behind_google_redirects():
+    client = FakeClient(
+        {
+            "organic_results": [
+                {
+                    "link": "/goto?url=CAESxAEB6zsw",
+                    "displayed_link": "https://www.mofa.go.jp › visit › visa",
+                    "snippet": "Visa exemption",
+                    "title": "VISA",
+                    "date": "Jan 15, 2026",
+                },
+                {
+                    "link": "https://www.google.com/goto?url=CAESZgHr",
+                    "displayed_link": "www.my.emb-japan.go.jp › itpr_en",
+                    "snippet": "Embassy",
+                },
+                {
+                    "link": "https://www.google.com.my/url?sa=t&url=CAES",
+                    "displayed_link": "https://isa.go.jp",
+                    "snippet": "Immigration",
+                },
+                {"link": "/goto?url=CAESngEB", "displayed_link": "260+ comments", "snippet": "forum"},
+                {"link": "/goto?url=CAESngEC", "displayed_link": "https://www.google.com › x", "snippet": "loop"},
+                {"link": "/goto?url=CAESngED", "snippet": "no displayed link"},
+                {"link": "/relative/page", "snippet": "not a web URL"},
+                {"link": "https://books.google.com/books?id=1", "snippet": "a real Google page"},
+            ]
+        }
+    )
+
+    hits = SerpApiWebSearch(client=client).search("q", limit=10)
+
+    assert [h.url for h in hits] == [
+        "https://www.mofa.go.jp/",
+        "https://www.my.emb-japan.go.jp/",
+        "https://isa.go.jp/",
+        "https://books.google.com/books?id=1",
+    ]
+    assert hits[0].source_date == "Jan 15, 2026"
+    assert [classify_source_authority(h.url) for h in hits[:3]] == [SourceAuthority.OFFICIAL] * 3
 
 
 def test_web_search_error_payload_raises():

@@ -21,6 +21,9 @@ from app.modules.factual_qa.models import (
 
 
 MAX_EVIDENCE_ITEMS: Final = 8
+# One full results page (same cost as fewer). The weakest are cut down to
+# MAX_EVIDENCE_ITEMS, so an official page ranked 9th still counts.
+SEARCH_RESULT_LIMIT: Final = 10
 _MAX_TITLE: Final = 200
 _MAX_SNIPPET: Final = 600
 _MAX_URL: Final = 500
@@ -31,6 +34,19 @@ _OFFICIAL_SUFFIX: Final = re.compile(
     r"(?:^|\.)(?:gov|mil|int)$"
     r"|(?:^|\.)(?:gov|go|gob|gouv|govt|gv|gub)\.[a-z]{2}$"
     r"|(?:^|\.)(?:gc\.ca|europa\.eu|admin\.ch|bund\.de|government\.nl)$"
+)
+
+# Government sites outside those suffixes, each checked by hand. Never add a
+# host by its name alone: thaiembassy.com is a private visa agency, while
+# Thailand's embassies are on thaiembassy.org (listed by mfa.go.th).
+_OFFICIAL_HOSTS: Final = frozenset(
+    {
+        "canada.ca",
+        "auswaertiges-amt.de",
+        "esteri.it",
+        "netherlandsworldwide.nl",
+        "thaiembassy.org",
+    }
 )
 
 _TRUSTED_PROVIDER_HOSTS: Final = frozenset(
@@ -72,6 +88,20 @@ _SECONDARY_HOSTS: Final = frozenset(
 _TRUSTED: Final = frozenset(
     {SourceAuthority.OFFICIAL, SourceAuthority.PRIMARY, SourceAuthority.TRUSTED_PROVIDER}
 )
+# Strongest first; decides which hits are kept when there are too many.
+_AUTHORITY_RANK: Final = {
+    authority: rank
+    for rank, authority in enumerate(
+        (
+            SourceAuthority.OFFICIAL,
+            SourceAuthority.PRIMARY,
+            SourceAuthority.TRUSTED_PROVIDER,
+            SourceAuthority.SECONDARY,
+            SourceAuthority.COMMUNITY,
+            SourceAuthority.UNKNOWN,
+        )
+    )
+}
 
 _DOMAIN_QUERY_SUFFIX: Final = {
     FactualDomain.TRAVEL_SAFETY: "official government travel advisory",
@@ -80,6 +110,14 @@ _DOMAIN_QUERY_SUFFIX: Final = {
     FactualDomain.FLIGHT_STATUS: "official flight status",
     FactualDomain.OPENING_HOURS: "official opening hours",
 }
+
+# Kinds of entry rule that have their own pages; kept in the visa query so
+# "Do I need a transit visa?" doesn't get the general visa page.
+_VISA_TOPIC: Final = re.compile(
+    r"\b(?:transit|work(?:ing holiday)?|student|business|on arrival|e-?visa|"
+    r"passport validity|arrival card|extension|overstay)\b",
+    re.IGNORECASE,
+)
 
 _RELATIVE_AGE: Final = re.compile(
     r"(\d+)\s*(minute|min|hour|hr|day|week|month|year)s?\s+ago",
@@ -117,7 +155,7 @@ def classify_source_authority(url: str, title: str = "") -> SourceAuthority:
     if not host or urlparse(url).scheme not in {"http", "https"}:
         return SourceAuthority.UNKNOWN
 
-    if _OFFICIAL_SUFFIX.search(host):
+    if _OFFICIAL_SUFFIX.search(host) or _host_in(host, _OFFICIAL_HOSTS):
         return SourceAuthority.OFFICIAL
 
     if _host_in(host, _TRUSTED_PROVIDER_HOSTS):
@@ -140,6 +178,9 @@ def classify_source_authority(url: str, title: str = "") -> SourceAuthority:
 
 
 def build_search_query(route: FactualRoute, trip: TripContext) -> str:
+    if route.domain is FactualDomain.VISA_ENTRY:
+        return _visa_query(route, trip)
+
     pieces = [route.factual_question]
 
     if route.target_location and route.target_location.casefold() not in route.factual_question.casefold():
@@ -148,20 +189,49 @@ def build_search_query(route: FactualRoute, trip: TripContext) -> str:
     if route.target_date:
         pieces.append(route.target_date)
 
-    if route.domain is FactualDomain.VISA_ENTRY:
-        if route.traveller_origin:
-            pieces.append(f"citizen of {route.traveller_origin}")
-        if trip.destination_country:
-            pieces.append(f"travel to {trip.destination_country}")
-        pieces.append("official immigration embassy government")
-    elif route.domain in _DOMAIN_QUERY_SUFFIX:
+    if route.domain in _DOMAIN_QUERY_SUFFIX:
         pieces.append(_DOMAIN_QUERY_SUFFIX[route.domain])
 
+    return _join(pieces)
+
+
+def _visa_query(route: FactualRoute, trip: TripContext) -> str:
+    """Phrased the way immigration and embassy pages are titled.
+
+    "Japan visa requirements for citizens of Malaysia" finds the Japanese
+    foreign ministry and embassies. The user's wording ("Do I need a visa as
+    a Malaysian?") finds forums, and added words like "official government"
+    match unrelated government pages, which would then pass the authority
+    check without answering the question. Entry rules are set per country:
+    a place named in the question wins, but the trip's city never replaces
+    the trip's country.
+    """
+
+    named = (route.target_location or "").strip()
+
+    if named.casefold() == (trip.destination or "").strip().casefold():
+        named = ""
+
+    destination = (named or trip.destination_country or "").strip()
+    origin = (route.traveller_origin or "").strip()
+
+    if not destination or not origin:
+        return _join([route.factual_question, f"citizens of {origin}" if origin else ""])
+
+    topics = dict.fromkeys(match.group(0).casefold() for match in _VISA_TOPIC.finditer(route.factual_question))
+    return _join([destination, *topics, "visa requirements for citizens of", origin])
+
+
+def _join(pieces: Iterable[str]) -> str:
     return " ".join(piece.strip() for piece in pieces if piece and piece.strip())
 
 
 def evidence_from_hits(hits: Sequence[SearchHit], *, retrieved_at: datetime) -> list[EvidenceItem]:
-    """Bounded, de-duplicated evidence with authority attached."""
+    """Bounded, de-duplicated evidence with authority attached.
+
+    When there are more hits than MAX_EVIDENCE_ITEMS, the weakest sources are
+    dropped; the rest keep their search order.
+    """
 
     stamp = retrieved_at.astimezone(timezone.utc).isoformat()
     seen: set[str] = set()
@@ -188,10 +258,12 @@ def evidence_from_hits(hits: Sequence[SearchHit], *, retrieved_at: datetime) -> 
             )
         )
 
-        if len(evidence) >= MAX_EVIDENCE_ITEMS:
-            break
+    if len(evidence) <= MAX_EVIDENCE_ITEMS:
+        return evidence
 
-    return evidence
+    weakest = len(_AUTHORITY_RANK)
+    strongest = sorted(range(len(evidence)), key=lambda i: (_AUTHORITY_RANK.get(evidence[i].authority, weakest), i))
+    return [evidence[i] for i in sorted(strongest[:MAX_EVIDENCE_ITEMS])]
 
 
 def source_age(source_date: str | None, now: datetime) -> timedelta | None:
@@ -321,6 +393,7 @@ def validate_factual_evidence(
 
 __all__ = [
     "MAX_EVIDENCE_ITEMS",
+    "SEARCH_RESULT_LIMIT",
     "authority_satisfies",
     "build_search_query",
     "classify_source_authority",
