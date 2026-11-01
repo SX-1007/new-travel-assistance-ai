@@ -53,7 +53,7 @@ def test_a_valid_token_returns_its_uid_using_a_named_app(monkeypatch):
     assert verifier.verify("token-1") == "uid-1"
     assert verifier.verify("token-2") == "uid-1"
 
-    # Its own app, never the default one the Firestore cache creates; built once.
+    # Its own named app, never the default one; built once.
     assert list(fakes.apps) == ["identity"]
     assert fakes.apps["identity"][2] == ("cert", {"type": "service_account", "project_id": "demo"})
     assert [call[0] for call in fakes.calls] == ["token-1", "token-2"]

@@ -51,8 +51,8 @@ def assessment_cache_key(
 ) -> dict[str, Any]:
     """The budget-independent identity of a trip's assessment.
 
-    Its field names and normalisation must not change: they locate the
-    assessments already cached in Firestore.
+    Its field names and normalisation must not change while assessments are
+    being confirmed: they locate the saved assessment in a later request.
     """
     return {
         "origin": trip.origin.strip().lower(),

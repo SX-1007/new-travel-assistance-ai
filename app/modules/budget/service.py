@@ -1,7 +1,7 @@
 """Budget-assessment use cases over injected provider and cache contracts.
 
 This module coordinates *where data comes from*; the rules themselves live in
-``assessment.py``. It never imports a concrete provider, Firestore, settings,
+``assessment.py``. It never imports a concrete provider, cache, settings,
 FastAPI or LangGraph — the composition root injects them.
 """
 
@@ -91,9 +91,10 @@ class BudgetAssessmentService:
     def get_or_create(self, trip: BudgetTrip) -> BudgetAssessmentResult:
         """Return a cached assessment or build one from cheapest real prices.
 
-        ``persisted`` is False when the new assessment could not be saved;
-        such an assessment must not be offered for later confirmation.
-        Raises BudgetAssessmentUnavailable when real data is missing.
+        ``persisted`` is False when the new assessment could not be saved
+        (including when the cache is down); such an assessment must not be
+        offered for later confirmation. Raises BudgetAssessmentUnavailable
+        when real data is missing.
         """
         base_currency, destination_currency = self._currencies(trip)
         key = assessment_cache_key(
@@ -118,8 +119,14 @@ class BudgetAssessmentService:
                 destination_currency=destination_currency,
             )
         except Exception:
-            self._cache.release(key, claim_id=claim_id)
+            if claim_id is not None:
+                self._cache.release(key, claim_id=claim_id)
             raise
+
+        if claim_id is None:
+            # The cache is down: nothing can be saved, but a sufficient
+            # budget can still be accepted.
+            return BudgetAssessmentResult(assessment=assessment, persisted=False)
 
         try:
             persisted = self._cache.publish(
@@ -191,23 +198,39 @@ class BudgetAssessmentService:
         self,
         key: dict[str, Any],
         trip: BudgetTrip,
-    ) -> BudgetAssessment | str:
-        """Return another caller's finished assessment, or our lease id."""
+    ) -> BudgetAssessment | str | None:
+        """Return another caller's finished assessment, our lease id, or None
+        when the cache can't lease (the caller builds without one)."""
         deadline = time.monotonic() + self._claim_wait_seconds
 
         while True:
-            status, payload, claim_id = self._cache.claim(
-                key,
-                lease_seconds=ASSESSMENT_CLAIM_LEASE_SECONDS,
-            )
+            try:
+                status, payload, claim_id = self._cache.claim(
+                    key,
+                    lease_seconds=ASSESSMENT_CLAIM_LEASE_SECONDS,
+                )
+            except Exception:
+                status, payload, claim_id = "error", None, None
+
+            if status == "error":
+                safe_log(logger, logging.WARNING, "budget.cache_claim_failed")
+                return None
 
             if status == "cached":
                 reused = self._matching(payload, trip)
                 if reused is not None:
                     return reused
                 # A stored entry that fails validation must not block the
-                # trip forever: drop it and claim again.
-                self._cache.invalidate(key)
+                # trip forever: drop it and claim again. If it can't be
+                # dropped, claiming again would find it again, so build
+                # without a lease instead of looping.
+                try:
+                    dropped = self._cache.invalidate(key)
+                except Exception:
+                    dropped = False
+                if not dropped:
+                    safe_log(logger, logging.WARNING, "budget.cache_invalidate_failed")
+                    return None
                 continue
 
             if status == "claimed" and claim_id:

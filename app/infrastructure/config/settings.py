@@ -68,7 +68,7 @@ class Settings(BaseSettings):
         ..., min_length=1, description="Direct PostgreSQL connection string"
     )
 
-    # ── Firebase ─────────────────────────────────────────────────────
+    # ── Firebase (sign-in) ───────────────────────────────────────────
     FIREBASE_CREDENTIAL_JSON: str = Field(
         ..., min_length=1, description="Path to JSON file or raw JSON string"
     )
@@ -79,6 +79,13 @@ class Settings(BaseSettings):
     # with no check, so anyone can act as any user. Never set it on a
     # server others can reach.
     AUTH_INSECURE_DEV_TOKENS: bool = False
+
+    # ── Cache (Upstash Redis, REST API) ─────────────────────────────
+    # Flight, hotel and place results and budget assessments. Optional:
+    # without them nothing is cached (more paid searches), and a budget
+    # below the minimum can't be confirmed in a later request.
+    UPSTASH_REDIS_REST_URL: str = ""
+    UPSTASH_REDIS_REST_TOKEN: str = ""
 
     # ── External APIs ────────────────────────────────────────────────
     MAPBOX_TOKEN: str = Field(..., min_length=1)

@@ -54,7 +54,11 @@ class BudgetAssessmentCachePort(Protocol):
         *,
         lease_seconds: int,
     ) -> tuple[ClaimStatus, Any, str | None]:
-        """Return a cached payload or lease the key for construction."""
+        """Return a cached payload or lease the key for construction.
+
+        ``error`` means the cache can't lease right now; the caller then
+        builds without a lease and treats the result as unsaved.
+        """
         ...
 
     def publish(

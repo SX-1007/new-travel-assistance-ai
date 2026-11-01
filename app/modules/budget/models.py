@@ -184,8 +184,8 @@ class BudgetEvidence(BaseModel):
 class BudgetAssessment(BaseModel):
     """A reusable, provider-grounded minimum budget for one exact trip.
 
-    The stored shape must not change: assessments already cached in Firestore
-    are read back with it.
+    The stored shape must not change: saved assessments are read back with
+    it in a later request.
     """
 
     assessment_id: str = Field(min_length=1)

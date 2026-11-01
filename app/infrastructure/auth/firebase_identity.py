@@ -1,7 +1,7 @@
 """Firebase Authentication ID tokens, checked with firebase-admin.
 
-The verifier owns a named Firebase app, so it never shares or depends on the
-default app that the Firestore cache creates. Google's signing keys are
+The verifier owns a named Firebase app, so it never shares or depends on a
+default app another part of the process might create. Google's signing keys are
 fetched once and cached by firebase-admin; a check needs no other network
 call. Revocation is not checked (that would be one more call per request), so
 a disabled account keeps working until its token expires, at most one hour.

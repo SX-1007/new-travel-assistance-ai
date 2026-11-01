@@ -1,4 +1,4 @@
-"""Place-search cache adapter backed by the generic Firestore cache store.
+"""Place-search cache adapter backed by the generic Redis cache store.
 
 Kept separate from the booking cache adapter so the two features can change
 their cache format, namespace or TTL independently.
@@ -8,21 +8,19 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
-from typing import Any, Final
+from typing import Any
 
-from app.infrastructure.database.firebase import FirestoreCacheStore
+from app.infrastructure.cache.redis_store import RedisCacheStore
 from app.shared.logging import safe_log
 
 
 logger = logging.getLogger(__name__)
 
-_COLLECTION: Final = "api_cache"
 
-
-class FirestorePlaceSearchCache:
+class RedisPlaceSearchCache:
     """Best-effort cache: read or write failures never fail a search."""
 
-    def __init__(self, *, store: FirestoreCacheStore) -> None:
+    def __init__(self, *, store: RedisCacheStore) -> None:
         self._store = store
 
     def get(
@@ -32,7 +30,7 @@ class FirestorePlaceSearchCache:
         key: Mapping[str, Any],
     ) -> Any | None:
         try:
-            return self._store.get(_COLLECTION, namespace, key)
+            return self._store.get(namespace, key)
 
         except Exception:
             safe_log(logger, logging.WARNING, "places.cache.read_failed")
@@ -47,15 +45,7 @@ class FirestorePlaceSearchCache:
         ttl_hours: int,
     ) -> bool:
         try:
-            return bool(
-                self._store.set(
-                    _COLLECTION,
-                    namespace,
-                    key,
-                    payload,
-                    ttl_hours=ttl_hours,
-                )
-            )
+            return bool(self._store.set(namespace, key, payload, ttl_hours=ttl_hours))
 
         except Exception:
             safe_log(logger, logging.WARNING, "places.cache.write_failed")
@@ -63,5 +53,5 @@ class FirestorePlaceSearchCache:
 
 
 __all__ = [
-    "FirestorePlaceSearchCache",
+    "RedisPlaceSearchCache",
 ]

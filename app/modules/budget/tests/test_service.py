@@ -55,7 +55,7 @@ class FakeHotels:
 
 
 class MemoryCache:
-    """In-memory stand-in for the Firestore lease cache."""
+    """In-memory stand-in for the Redis lease cache."""
 
     def __init__(self, *, publish_ok=True):
         self.entries = {}
@@ -145,6 +145,84 @@ def test_busy_lease_times_out_as_unavailable():
 
     with pytest.raises(BudgetAssessmentUnavailable):
         make_service(cache=cache).get_or_create(TRIP)
+
+
+class DownCache(MemoryCache):
+    """A cache that is unreachable: every lease attempt fails."""
+
+    def __init__(self, *, raises=False):
+        super().__init__()
+        self.raises = raises
+        self.released = []
+
+    def get(self, key):
+        return None
+
+    def claim(self, key, *, lease_seconds):
+        if self.raises:
+            raise RuntimeError("cache client bug")
+        return "error", None, None
+
+    def publish(self, key, payload, *, claim_id, ttl_hours):
+        raise AssertionError("nothing can be published without a lease")
+
+    def release(self, key, *, claim_id):
+        self.released.append(claim_id)
+        return False
+
+
+@pytest.mark.parametrize("raises", [False, True])
+def test_cache_down_still_builds_an_unsaved_assessment(raises):
+    cache = DownCache(raises=raises)
+    flights = FakeFlights()
+
+    result = make_service(flights=flights, cache=cache).get_or_create(TRIP)
+
+    assert result.persisted is False
+    assert result.assessment.recommended_minimum_budget == 9375.0
+    assert flights.calls == 2
+    assert cache.released == []
+
+
+def test_cache_down_and_build_fails_releases_nothing():
+    cache = DownCache()
+
+    with pytest.raises(BudgetAssessmentUnavailable):
+        make_service(hotels=FakeHotels(results=[]), cache=cache).get_or_create(TRIP)
+
+    assert cache.released == []
+
+
+def test_cache_down_accepts_a_sufficient_budget_but_never_offers_a_confirmation():
+    service = make_service(cache=DownCache())
+
+    enough = gate(service, {"mode": "amount", "total_base_budget": 10000})
+    too_low = gate(service, {"mode": "amount", "total_base_budget": 100})
+
+    assert enough.status == "accepted"
+    assert too_low.status == "budget_check_unavailable"
+    assert too_low.reason == "assessment_cache_unavailable"
+
+
+class StuckEntryCache(MemoryCache):
+    """Holds an entry that fails validation and can't be deleted."""
+
+    def claim(self, key, *, lease_seconds):
+        self.claim_calls = getattr(self, "claim_calls", 0) + 1
+        return "cached", {"not": "an assessment"}, None
+
+    def invalidate(self, key):
+        return False
+
+
+def test_undeletable_invalid_entry_builds_unsaved_instead_of_looping():
+    cache = StuckEntryCache()
+
+    result = make_service(cache=cache).get_or_create(TRIP)
+
+    assert result.persisted is False
+    assert result.assessment.recommended_minimum_budget == 9375.0
+    assert cache.claim_calls == 1
 
 
 def test_load_confirmed_requires_matching_id():

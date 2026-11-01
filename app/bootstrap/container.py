@@ -27,10 +27,10 @@ from app.infrastructure.activities.idea_generator import (
     GeminiActivityIdeaGenerator,
 )
 from app.infrastructure.budget.assessment_cache import (
-    FirestoreBudgetAssessmentCache,
+    RedisBudgetAssessmentCache,
 )
 from app.infrastructure.booking.cache import (
-    FirebaseBookingSearchCache,
+    RedisBookingSearchCache,
 )
 from app.infrastructure.booking.flight_provider import (
     SerpApiFlightProvider,
@@ -53,8 +53,11 @@ from app.infrastructure.destination.city_picker import (
 )
 from app.infrastructure.auth.dev_identity import InsecureDevIdentityVerifier
 from app.infrastructure.auth.firebase_identity import FirebaseIdTokenVerifier
-from app.infrastructure.database.firebase import (
-    FirestoreCacheStore,
+from app.infrastructure.cache.redis_store import (
+    RedisCacheStore,
+)
+from app.infrastructure.cache.upstash import (
+    UpstashRestClient,
 )
 from app.infrastructure.database.checkpoint_pool import (
     open_checkpoint_pool,
@@ -110,7 +113,7 @@ from app.infrastructure.output_review.gemini_reviewer import (
     GeminiOutputReviewer,
 )
 from app.infrastructure.places.cache import (
-    FirestorePlaceSearchCache,
+    RedisPlaceSearchCache,
 )
 from app.infrastructure.places.serpapi_maps import (
     SerpApiMapsPlaceSearch,
@@ -283,11 +286,50 @@ def _chat_backends(api_key: str, model: str) -> tuple[ChatBackend, ...]:
 # ── Storage ─────────────────────────────────────────────────────────
 
 
+# ── Cache ───────────────────────────────────────────────────────────
+
+
+def _new_cache_store() -> RedisCacheStore:
+    """A store with its own Upstash client and session; disabled (an empty
+    cache that saves nothing) without the Upstash settings."""
+
+    settings = _settings()
+    url = settings.UPSTASH_REDIS_REST_URL.strip()
+    token = settings.UPSTASH_REDIS_REST_TOKEN.strip()
+
+    if not url or not token:
+        logger.warning("Cache disabled: UPSTASH_REDIS_REST_URL or UPSTASH_REDIS_REST_TOKEN is not set.")
+        return RedisCacheStore(client=None)
+
+    return RedisCacheStore(client=UpstashRestClient(url=url, token=token))
+
+
+# One store per user of the cache, so one feature's cache traffic or
+# failures never hold up another's. Flights and hotels share no session,
+# and chat pins share none with planning (as with their SerpAPI clients).
 @lru_cache(maxsize=1)
-def get_firestore_cache_store() -> FirestoreCacheStore:
-    return FirestoreCacheStore(
-        credential_json=_settings().FIREBASE_CREDENTIAL_JSON,
-    )
+def get_flight_cache_store() -> RedisCacheStore:
+    return _new_cache_store()
+
+
+@lru_cache(maxsize=1)
+def get_hotel_cache_store() -> RedisCacheStore:
+    return _new_cache_store()
+
+
+@lru_cache(maxsize=1)
+def get_place_cache_store() -> RedisCacheStore:
+    return _new_cache_store()
+
+
+@lru_cache(maxsize=1)
+def get_pin_cache_store() -> RedisCacheStore:
+    return _new_cache_store()
+
+
+@lru_cache(maxsize=1)
+def get_budget_cache_store() -> RedisCacheStore:
+    return _new_cache_store()
 
 
 @lru_cache(maxsize=1)
@@ -433,8 +475,8 @@ def get_flight_search_provider(
             backends=_chat_backends(settings.effective_iata_api_key, settings.GEMINI_UTILITY_MODEL),
         ),
 
-        cache=FirebaseBookingSearchCache(
-            store=get_firestore_cache_store(),
+        cache=RedisBookingSearchCache(
+            store=get_flight_cache_store(),
         ),
     )
 
@@ -444,8 +486,8 @@ def get_hotel_search_provider() -> HotelSearchPort:
     """Hotel search with its own cache and an injected geocoder."""
     return SerpApiHotelProvider(
         client=get_hotel_search_client(),
-        cache=FirebaseBookingSearchCache(
-            store=get_firestore_cache_store(),
+        cache=RedisBookingSearchCache(
+            store=get_hotel_cache_store(),
         ),
         location_verifier=get_mapbox_reverse_geocoder(),
     )
@@ -523,8 +565,8 @@ def get_place_search_provider() -> SerpApiMapsPlaceSearch:
 
     return SerpApiMapsPlaceSearch(
         client=get_place_search_client(),
-        cache=FirestorePlaceSearchCache(
-            store=get_firestore_cache_store(),
+        cache=RedisPlaceSearchCache(
+            store=get_place_cache_store(),
         ),
     )
 
@@ -544,8 +586,8 @@ def get_place_pin_locator() -> PlacePinLocator:
     return PlacePinLocator(
         search=SerpApiMapsPlaceSearch(
             client=get_pin_search_client(),
-            cache=FirestorePlaceSearchCache(
-                store=get_firestore_cache_store(),
+            cache=RedisPlaceSearchCache(
+                store=get_pin_cache_store(),
             ),
         ),
     )
@@ -608,14 +650,14 @@ def get_nearby_amenity_service() -> NearbyAmenityService:
 
 @lru_cache(maxsize=1)
 def get_budget_assessment_service() -> BudgetAssessmentService:
-    """Provider-grounded minimum budgets with a shared Firestore lease."""
+    """Provider-grounded minimum budgets with a shared Redis lease."""
 
     return BudgetAssessmentService(
         currency_provider=get_currency_provider(),
         flight_search=get_flight_search_provider(),
         hotel_search=get_hotel_search_provider(),
-        cache=FirestoreBudgetAssessmentCache(
-            store=get_firestore_cache_store(),
+        cache=RedisBudgetAssessmentCache(
+            store=get_budget_cache_store(),
         ),
     )
 
@@ -999,7 +1041,11 @@ _ALL_GETTERS = (
     get_embedder,
     get_session_access_service,
     get_user_profile_store,
-    get_firestore_cache_store,
+    get_flight_cache_store,
+    get_hotel_cache_store,
+    get_place_cache_store,
+    get_pin_cache_store,
+    get_budget_cache_store,
 )
 
 
@@ -1018,6 +1064,11 @@ def shutdown_container() -> None:
         get_mapbox_forward_geocoder,
         get_mapbox_reverse_geocoder,
         get_currency_provider,
+        get_flight_cache_store,
+        get_hotel_cache_store,
+        get_place_cache_store,
+        get_pin_cache_store,
+        get_budget_cache_store,
     )
 
     for getter in closable_getters:
