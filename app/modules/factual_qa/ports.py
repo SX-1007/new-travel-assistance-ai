@@ -20,9 +20,14 @@ class RequestClassifierPort(Protocol):
 
 
 class WebSearchPort(Protocol):
-    """General web search returning raw hits."""
+    """General web search returning raw hits.
 
-    def search(self, query: str, *, limit: int) -> list[SearchHit]:
+    ``max_age_minutes`` is the route's page-age limit (None: any age). A
+    search that answers from cached copies must not return a copy older than
+    that; one that searches the live web may ignore it.
+    """
+
+    def search(self, query: str, *, limit: int, max_age_minutes: int | None = None) -> list[SearchHit]:
         ...
 
 

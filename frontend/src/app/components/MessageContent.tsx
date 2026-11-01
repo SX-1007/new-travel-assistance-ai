@@ -13,7 +13,8 @@
  *          `[ Book Now ]`-style action buttons.
  *
  *   2. A PLAIN ANSWER — the agent just answers a question. Rendered with a
- *      lightweight markdown pass (headings, lists, tables, blockquotes, bold).
+ *      lightweight markdown pass (headings, lists, tables, blockquotes, bold,
+ *      bare http(s) links).
  *
  * This module parses that format and renders it as first-class UI instead of
  * dumping the raw markdown as paragraphs. It intentionally has no external
@@ -130,7 +131,7 @@ const LocationMap = ({ points }: { points: MarkerPoint[] }) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────
-// Inline markdown  (**bold**, *italic*, `code`, `[ Button ]` chips)
+// Inline markdown  (**bold**, *italic*, `code`, `[ Button ]` chips, links)
 // ─────────────────────────────────────────────────────────────────────
 
 /** A ``[ … ]`` chip rendered as a pill button (booking / map actions). */
@@ -157,13 +158,36 @@ const ActionChip = ({ label }: { label: string }) => {
 };
 
 /**
+ * Split a bare link from sentence punctuation after it ("see https://a.gov/.").
+ * A closing parenthesis stays when the link opened one. Null when the token
+ * isn't a valid http(s) URL, so it is shown as plain text.
+ */
+function splitWebLink(token: string): { href: string; rest: string } | null {
+  let href = token;
+  while (href) {
+    const tail = href[href.length - 1];
+    const unbalancedParen = tail === ')'
+      && href.split(')').length > href.split('(').length;
+    if (!'.,;:!?'.includes(tail) && !unbalancedParen) break;
+    href = href.slice(0, -1);
+  }
+  try {
+    const { protocol } = new URL(href);
+    if (protocol !== 'http:' && protocol !== 'https:') return null;
+  } catch {
+    return null;
+  }
+  return { href, rest: token.slice(href.length) };
+}
+
+/**
  * Tokenise a single line of inline markdown into React nodes.
  * Handles nested emphasis loosely (good enough for the agent's output).
  */
 function renderInline(text: string, keyBase: string): React.ReactNode[] {
   const nodes: React.ReactNode[] = [];
-  // Order matters: bold before italic so ** wins over *.
-  const pattern = /(\*\*[^*]+\*\*|\*[^*\n]+\*|`[^`]+`|~~[^~]+~~)/g;
+  // Order matters: links first, then bold before italic so ** wins over *.
+  const pattern = /(https?:\/\/[^\s<>"`*]+|\*\*[^*]+\*\*|\*[^*\n]+\*|`[^`]+`|~~[^~]+~~)/g;
   let last = 0;
   let m: RegExpExecArray | null;
   let i = 0;
@@ -173,7 +197,25 @@ function renderInline(text: string, keyBase: string): React.ReactNode[] {
     const tok = m[0];
     const key = `${keyBase}-${i++}`;
 
-    if (tok.startsWith('**')) {
+    if (/^https?:\/\//.test(tok)) {
+      const link = splitWebLink(tok);
+      if (link) {
+        nodes.push(
+          <a
+            key={key}
+            href={link.href}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="break-all text-blue-600 underline underline-offset-2 hover:text-blue-700"
+          >
+            {link.href}
+          </a>,
+        );
+        if (link.rest) nodes.push(link.rest);
+      } else {
+        nodes.push(tok);
+      }
+    } else if (tok.startsWith('**')) {
       nodes.push(
         <strong key={key} className="font-semibold text-slate-900">
           {tok.slice(2, -2)}

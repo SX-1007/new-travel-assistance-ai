@@ -5,11 +5,13 @@ Flow for one turn:
 1. ``route``: rules classify obvious messages for free; otherwise a model
    classifies (rules again if it is down). Server policy then decides
    whether web evidence is mandatory and how authoritative it must be.
-2. ``retrieve``: one web search, then authority, freshness and source-count
-   checks. Only evidence that passes is ever shown to a model.
+2. ``retrieve``: one web search (told the route's page-age limit), then
+   authority, freshness and source-count checks. Only evidence that passes
+   is ever shown to a model.
 3. ``answer``: a writer drafts from the trip context and usable evidence;
    a grounding reviewer checks it when there is something to check against.
-   Any failure returns a fixed "couldn't verify" message instead of a guess.
+   Any failure returns a fixed "couldn't verify" message instead of a guess;
+   for a high-risk question it lists the official pages found, if any.
 
 Nothing here knows about LangGraph or ``AgentState``.
 """
@@ -48,6 +50,7 @@ from app.modules.factual_qa.retrieval import (
     SEARCH_RESULT_LIMIT,
     build_search_query,
     evidence_from_hits,
+    reference_links,
     usable_evidence,
     validate_factual_evidence,
 )
@@ -117,7 +120,11 @@ class FactualQAService:
             return RetrievalResult(evidence=(), validation=EvidenceValidation(approved=True))
 
         try:
-            hits = self._search.search(build_search_query(route, trip), limit=SEARCH_RESULT_LIMIT)
+            hits = self._search.search(
+                build_search_query(route, trip),
+                limit=SEARCH_RESULT_LIMIT,
+                max_age_minutes=route.freshness_minutes,
+            )
         except Exception:
             safe_log(logger, logging.WARNING, "factual.search_failed")
             hits = []
@@ -139,7 +146,7 @@ class FactualQAService:
         validation: EvidenceValidation,
     ) -> FactualAnswer:
         if route.requires_external_evidence and not validation.approved:
-            return FactualAnswer(safe_unverified_message(route), tuple(validation.issue_codes))
+            return _unverified(route, evidence, validation.issue_codes)
 
         now = self._clock()
         usable = usable_evidence(route, evidence, now) if route.requires_external_evidence else []
@@ -155,10 +162,10 @@ class FactualQAService:
             text = (self._writer.write(payload) or "").strip()
         except Exception:
             safe_log(logger, logging.WARNING, "factual.writer_unavailable")
-            return FactualAnswer(safe_unverified_message(route), ("fact.model_unavailable",))
+            return _unverified(route, evidence, ("fact.model_unavailable",))
 
         if not text:
-            return FactualAnswer(safe_unverified_message(route), ("fact.empty_answer",))
+            return _unverified(route, evidence, ("fact.empty_answer",))
 
         # Stable general knowledge has nothing to be checked against; a
         # review there could only reject correct answers.
@@ -169,10 +176,10 @@ class FactualQAService:
             review = self._reviewer.review({**payload, "proposed_answer": text})
         except Exception:
             safe_log(logger, logging.WARNING, "factual.reviewer_unavailable")
-            return FactualAnswer(safe_unverified_message(route), ("fact.review_unavailable",))
+            return _unverified(route, evidence, ("fact.review_unavailable",))
 
         if not review.approved:
-            return FactualAnswer(safe_unverified_message(route), tuple(review.issue_codes))
+            return _unverified(route, evidence, review.issue_codes)
 
         return FactualAnswer(text)
 
@@ -221,6 +228,19 @@ class FactualQAService:
             "trip_end_date": trip.end_date,
             "current_utc_date": self._clock().date().isoformat(),
         }
+
+
+def _unverified(
+    route: FactualRoute,
+    evidence: Sequence[EvidenceItem],
+    issue_codes: Sequence[str],
+) -> FactualAnswer:
+    """The safe fallback, with any official pages found for the user to check."""
+
+    return FactualAnswer(
+        safe_unverified_message(route, reference_links(route, evidence)),
+        tuple(issue_codes),
+    )
 
 
 def _route_for_models(route: FactualRoute) -> dict[str, Any]:

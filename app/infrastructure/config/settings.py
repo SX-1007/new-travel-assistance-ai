@@ -87,6 +87,9 @@ class Settings(BaseSettings):
     SERPAPI_PLACE: str = Field(..., min_length=1)
     # Optional key for factual web search; falls back to SERPAPI_PLACE.
     SERPAPI_FACTUAL: str = ""
+    # Optional. When set, factual web search tries Exa first and uses
+    # SerpAPI only when Exa fails, finds nothing or is out of credit.
+    EXA_API_KEY: str = ""
     FREECURRENCY_API: str = Field(..., min_length=1)
 
     # ── Effective keys: a task's own key, else the fallback ──────────

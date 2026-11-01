@@ -49,6 +49,50 @@ describe('MessageContent structured renderer', () => {
     expect(screen.getByText('old').tagName).toBe('S');
   });
 
+  it('renders the official pages of an unverified answer as safe links', () => {
+    render(
+      <MessageContent
+        content={
+          "I couldn't verify this from enough authoritative current sources.\n\n"
+          + 'Official pages I found that may have the details:\n'
+          + '- https://www.mofa.go.jp/visit/visa/index.html\n'
+          + '- https://www.isa.go.jp/en/'
+        }
+      />,
+    );
+    const links = screen.getAllByRole('link');
+    expect(links.map((link) => link.getAttribute('href'))).toEqual([
+      'https://www.mofa.go.jp/visit/visa/index.html',
+      'https://www.isa.go.jp/en/',
+    ]);
+    links.forEach((link) => {
+      expect(link).toHaveAttribute('target', '_blank');
+      expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+    });
+  });
+
+  it.each([
+    ['sentence punctuation', 'See https://www.mofa.go.jp/visa.', 'https://www.mofa.go.jp/visa', '.'],
+    ['a closing bracket of the sentence', '(see https://www.isa.go.jp/en)', 'https://www.isa.go.jp/en', ')'],
+    ['a bracket that is part of the link', 'https://en.wikipedia.org/wiki/Visa_(document) now', 'https://en.wikipedia.org/wiki/Visa_(document)', ''],
+  ])('keeps %s out of or in a link as written', (_label, content, href, after) => {
+    const { container } = render(<MessageContent content={content} />);
+    const link = screen.getByRole('link');
+    expect(link).toHaveAttribute('href', href);
+    expect(link).toHaveTextContent(href);
+    expect(container.textContent).toContain(`${href}${after}`);
+  });
+
+  it.each([
+    ['a non-web scheme', 'javascript:alert(1)'],
+    ['a scheme-relative address', '//evil.example/x'],
+    ['a malformed address', 'https://'],
+  ])('never links %s', (_label, content) => {
+    const { container } = render(<MessageContent content={content} />);
+    expect(screen.queryByRole('link')).not.toBeInTheDocument();
+    expect(container).toHaveTextContent(content);
+  });
+
   it('turns bracketed inline code into an action chip', () => {
     render(<MessageContent content={'`[ Book Now ]`'} />);
     expect(screen.getByRole('button', { name: /Book Now/i })).toBeInTheDocument();

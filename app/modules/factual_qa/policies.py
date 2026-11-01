@@ -9,7 +9,7 @@ never be downgraded by the model.
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Final, Literal
 
@@ -367,14 +367,26 @@ def next_after_retrieval(
     return "answer"
 
 
-def safe_unverified_message(route: FactualRoute) -> str:
+def safe_unverified_message(route: FactualRoute, references: Sequence[str] = ()) -> str:
+    """The fixed "couldn't verify" reply.
+
+    ``references`` are official pages to check; they are listed only with
+    the high-risk message, the one that tells the user to check an authority.
+    """
+
     if route.risk_level is RiskLevel.HIGH:
-        return (
+        message = (
             "I couldn't verify this from enough authoritative current sources, "
             "so I don't want to give you an unsafe definitive answer. Please "
             "check the relevant official government, immigration, embassy, or "
             "health authority before relying on it."
         )
+
+        if not references:
+            return message
+
+        listed = "\n".join(f"- {link}" for link in references)
+        return f"{message}\n\nOfficial pages I found that may have the details:\n{listed}"
 
     if route.time_sensitive:
         return (

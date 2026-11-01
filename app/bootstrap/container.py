@@ -75,6 +75,12 @@ from app.infrastructure.factual_qa.gemini import (
     GeminiGroundingReviewer,
     GeminiRequestClassifier,
 )
+from app.infrastructure.factual_qa.exa_search import (
+    ExaWebSearch,
+)
+from app.infrastructure.factual_qa.fallback_search import (
+    FallbackWebSearch,
+)
 from app.infrastructure.factual_qa.web_search import (
     SerpApiWebSearch,
 )
@@ -108,6 +114,9 @@ from app.infrastructure.places.cache import (
 )
 from app.infrastructure.places.serpapi_maps import (
     SerpApiMapsPlaceSearch,
+)
+from app.infrastructure.search.exa import (
+    ExaClient,
 )
 from app.infrastructure.search.serpapi import (
     SerpApiClient,
@@ -144,6 +153,9 @@ from app.modules.booking.service import (
 )
 from app.modules.destination.service import (
     DestinationResolutionService,
+)
+from app.modules.factual_qa.ports import (
+    WebSearchPort,
 )
 from app.modules.factual_qa.service import (
     FactualQAService,
@@ -721,8 +733,25 @@ def get_factual_search_client() -> SerpApiClient:
 
 
 @lru_cache(maxsize=1)
-def get_factual_web_search() -> SerpApiWebSearch:
-    return SerpApiWebSearch(client=get_factual_search_client())
+def get_factual_exa_client() -> ExaClient:
+    """Exa's own client and session; only built when EXA_API_KEY is set."""
+
+    return ExaClient(api_key=_settings().EXA_API_KEY)
+
+
+@lru_cache(maxsize=1)
+def get_factual_web_search() -> WebSearchPort:
+    """Exa first, SerpAPI as its backup; SerpAPI alone without an Exa key."""
+
+    serpapi = SerpApiWebSearch(client=get_factual_search_client())
+
+    if not _settings().EXA_API_KEY.strip():
+        return serpapi
+
+    return FallbackWebSearch(
+        primary=ExaWebSearch(client=get_factual_exa_client()),
+        backup=serpapi,
+    )
 
 
 @lru_cache(maxsize=1)
@@ -938,6 +967,7 @@ _ALL_GETTERS = (
     get_factual_answer_writer,
     get_factual_request_classifier,
     get_factual_web_search,
+    get_factual_exa_client,
     get_factual_search_client,
     get_output_review_service,
     get_output_reviewer,
@@ -983,6 +1013,7 @@ def shutdown_container() -> None:
         get_place_search_client,
         get_pin_search_client,
         get_factual_search_client,
+        get_factual_exa_client,
         get_mapbox_directions_client,
         get_mapbox_forward_geocoder,
         get_mapbox_reverse_geocoder,

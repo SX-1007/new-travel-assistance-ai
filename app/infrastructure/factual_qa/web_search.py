@@ -24,7 +24,9 @@ class SerpApiWebSearch:
     def __init__(self, *, client: SerpApiClient) -> None:
         self._client = client
 
-    def search(self, query: str, *, limit: int) -> list[SearchHit]:
+    def search(self, query: str, *, limit: int, max_age_minutes: int | None = None) -> list[SearchHit]:
+        # Google searches the live web and shows each page's date, which
+        # factual Q&A judges itself, so the page-age limit needs nothing here.
         # The target location is already part of the query text. SerpAPI's
         # "location" parameter only accepts its own canonical names and
         # rejects the whole search for anything else.

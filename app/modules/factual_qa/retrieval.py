@@ -27,6 +27,16 @@ SEARCH_RESULT_LIMIT: Final = 10
 _MAX_TITLE: Final = 200
 _MAX_SNIPPET: Final = 600
 _MAX_URL: Final = 500
+# Official pages listed when a high-risk answer can't be verified.
+MAX_REFERENCE_LINKS: Final = 3
+
+# A link the chat can show as-is. Anything else (spaces, quotes, brackets,
+# "|", "*", "`", "~", a user@ part) could break the reply's formatting or
+# trip the frontend's JSON check, so such a page is shown by its site root.
+_DISPLAYABLE_LINK: Final = re.compile(
+    r"https?://[a-z0-9.-]+(?::\d{1,5})?(?:/[a-z0-9\-._%!$&'()+,;=:@/?#]*)?",
+    re.IGNORECASE,
+)
 
 # Government and intergovernmental registries. Matched only at the END of
 # the host, so "visa.gov.example.com" is not official.
@@ -403,14 +413,62 @@ def validate_factual_evidence(
     )
 
 
+def reference_links(route: FactualRoute, evidence: Sequence[EvidenceItem]) -> list[str]:
+    """Official pages to point the user to when the answer couldn't be verified.
+
+    Only for questions that require official sources, and only pages that are
+    official by their URL, so the fallback never sends anyone to a forum or a
+    look-alike agency site. One page per site, in search order. A page's date
+    doesn't matter here: the user reads the live page, not the snippet.
+    """
+
+    if route.required_authority is not RequiredAuthority.OFFICIAL:
+        return []
+
+    links: list[str] = []
+    hosts: set[str] = set()
+
+    for item in evidence:
+        host = source_host(item.url)
+
+        if not host or host in hosts or classify_source_authority(item.url) is not SourceAuthority.OFFICIAL:
+            continue
+
+        link = _displayable_link(item.url)
+
+        if link is None:
+            continue
+
+        hosts.add(host)
+        links.append(link)
+
+        if len(links) == MAX_REFERENCE_LINKS:
+            break
+
+    return links
+
+
+def _displayable_link(url: str) -> str | None:
+    url = url.strip()
+
+    if _DISPLAYABLE_LINK.fullmatch(url):
+        return url
+
+    parsed = urlparse(url)
+    root = f"{parsed.scheme}://{parsed.netloc}/"
+    return root if _DISPLAYABLE_LINK.fullmatch(root) else None
+
+
 __all__ = [
     "MAX_EVIDENCE_ITEMS",
+    "MAX_REFERENCE_LINKS",
     "SEARCH_RESULT_LIMIT",
     "authority_satisfies",
     "build_search_query",
     "classify_source_authority",
     "evidence_from_hits",
     "is_stale",
+    "reference_links",
     "source_age",
     "source_host",
     "usable_evidence",

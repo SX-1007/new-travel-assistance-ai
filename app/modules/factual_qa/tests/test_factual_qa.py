@@ -25,13 +25,16 @@ from app.modules.factual_qa.policies import (
     next_after_retrieval,
     next_after_routing,
     rule_classification,
+    safe_unverified_message,
 )
 from app.modules.factual_qa.retrieval import (
     MAX_EVIDENCE_ITEMS,
+    MAX_REFERENCE_LINKS,
     build_search_query,
     classify_source_authority,
     evidence_from_hits,
     is_stale,
+    reference_links,
     validate_factual_evidence,
 )
 from app.modules.factual_qa.service import FactualQAService
@@ -297,6 +300,75 @@ def test_the_weakest_hits_are_cut_and_the_rest_keep_search_order():
     assert evidence[0].url == "https://www.reddit.com/r/0"
 
 
+def test_reference_links_are_official_one_per_site_in_search_order():
+    evidence = [
+        item("https://www.reddit.com/r/japantravel"),
+        item("https://www.mofa.go.jp/j_info/visit/visa/short/novisa.html"),
+        item("https://www.mofa.go.jp/visit/visa/index.html"),
+        item("https://www.thaiembassy.com/japan-visa"),
+        item("https://www.my.emb-japan.go.jp/"),
+        item("https://www.isa.go.jp/en/"),
+        item("https://www.moj.go.jp/"),
+    ]
+
+    assert reference_links(visa_route(), evidence) == [
+        "https://www.mofa.go.jp/j_info/visit/visa/short/novisa.html",
+        "https://www.my.emb-japan.go.jp/",
+        "https://www.isa.go.jp/en/",
+    ]
+    assert MAX_REFERENCE_LINKS == 3
+
+
+def test_reference_links_judge_authority_from_the_url_not_the_stored_label():
+    forged = item("https://visa-japan.example.com/apply", authority=SourceAuthority.OFFICIAL)
+
+    assert reference_links(visa_route(), [forged]) == []
+
+
+@pytest.mark.parametrize(
+    ("url", "shown"),
+    [
+        ("https://www.mofa.go.jp/a|b", "https://www.mofa.go.jp/"),
+        ("https://www.mofa.go.jp/visa [en]", "https://www.mofa.go.jp/"),
+        ("https://www.mofa.go.jp/{id}", "https://www.mofa.go.jp/"),
+        ("https://www.mofa.go.jp/a**b**", "https://www.mofa.go.jp/"),
+        ("https://www.mofa.go.jp/visa?lang=en#short", "https://www.mofa.go.jp/visa?lang=en#short"),
+        ("http://www.mofa.go.jp:8080/visa", "http://www.mofa.go.jp:8080/visa"),
+    ],
+)
+def test_a_link_that_would_break_the_reply_is_shown_by_its_site_root(url, shown):
+    assert reference_links(visa_route(), [item(url)]) == [shown]
+
+
+def test_a_link_that_hides_another_site_is_never_listed():
+    # Shown as text, "https://mofa.go.jp.example.com@isa.go.jp/" reads as a different site.
+    disguised = item("https://mofa.go.jp.example.com@isa.go.jp/")
+
+    assert disguised.authority is SourceAuthority.OFFICIAL
+    assert reference_links(visa_route(), [disguised]) == []
+
+
+def test_reference_links_only_for_questions_that_need_official_sources():
+    weather = route_for("Will it rain in Tokyo tomorrow?", classified(RequestType.PREDICTION, FactualDomain.WEATHER))
+
+    assert reference_links(weather, [item("https://www.jma.go.jp/")]) == []
+
+
+def test_the_safe_message_lists_official_pages_only_for_high_risk_questions():
+    links = ["https://www.mofa.go.jp/", "https://www.isa.go.jp/en/"]
+    metro = route_for("Is the metro delayed now?", classified(RequestType.FACTUAL))
+
+    text = safe_unverified_message(visa_route(), links)
+
+    assert text.startswith(safe_unverified_message(visa_route()))
+    assert text.endswith(
+        "\n\nOfficial pages I found that may have the details:\n"
+        "- https://www.mofa.go.jp/\n"
+        "- https://www.isa.go.jp/en/"
+    )
+    assert safe_unverified_message(metro, links) == safe_unverified_message(metro)
+
+
 def visa_route_for(message, **raw):
     return route_for(message, classified(RequestType.FACTUAL, FactualDomain.VISA_ENTRY, **raw))
 
@@ -346,8 +418,9 @@ class Fakes:
             raise self.classification
         return self.classification
 
-    def search(self, query, *, limit):
+    def search(self, query, *, limit, max_age_minutes=None):
         self.calls.append(("search", query))
+        self.max_age_minutes = max_age_minutes
         if isinstance(self.hits, Exception):
             raise self.hits
         return self.hits
@@ -384,6 +457,18 @@ def test_model_failure_falls_back_to_rules():
     assert route.domain is FactualDomain.VISA_ENTRY
 
 
+def test_search_is_told_the_route_page_age_limit():
+    # A search answering from cached copies needs it; a standing rule has none.
+    weather = route_for("Will it rain tomorrow?", classified(RequestType.FACTUAL))
+    fakes = Fakes()
+
+    fakes.service().retrieve(weather, TRIP)
+    assert fakes.max_age_minutes == weather.freshness_minutes == 30
+
+    fakes.service().retrieve(visa_route(), TRIP)
+    assert fakes.max_age_minutes is None
+
+
 def test_failed_search_means_missing_evidence_and_a_safe_answer():
     fakes = Fakes(hits=SerpApiUnavailableError("down"))
     service = fakes.service()
@@ -393,8 +478,25 @@ def test_failed_search_means_missing_evidence_and_a_safe_answer():
     answer = service.answer(route, TRIP, result.evidence, result.validation)
 
     assert result.validation.issue_codes == ["fact.evidence_missing"]
-    assert not answer.grounded and "official" in answer.text
+    assert not answer.grounded and answer.text == safe_unverified_message(route)
     assert not any(isinstance(c, tuple) and c[0] == "write" for c in fakes.calls)
+
+
+def test_too_few_official_sites_still_lists_the_one_found():
+    hits = [
+        SearchHit(title="MOFA", url="https://www.mofa.go.jp/visit/visa/", snippet="Online appointments required."),
+        SearchHit(title="forum", url="https://www.reddit.com/r/x", snippet="No visa needed."),
+    ]
+    fakes = Fakes(hits=hits)
+    service = fakes.service()
+    route = visa_route()
+    result = service.retrieve(route, TRIP)
+
+    answer = service.answer(route, TRIP, result.evidence, result.validation)
+
+    assert answer.issue_codes == ("fact.source_count_insufficient",)
+    assert answer.text.endswith("- https://www.mofa.go.jp/visit/visa/")
+    assert "reddit" not in answer.text
 
 
 def test_writer_sees_only_usable_evidence_and_answer_is_reviewed():
@@ -422,19 +524,36 @@ def test_writer_sees_only_usable_evidence_and_answer_is_reviewed():
     assert search_query == "Japan visa requirements for citizens of Malaysia"
 
 
-def test_grounding_rejection_returns_the_safe_message():
-    hits = [SearchHit(title="a", url="https://a.go.jp", snippet="x"), SearchHit(title="b", url="https://b.go.jp", snippet="y")]
-    fakes = Fakes(
-        hits=hits,
-        review=GroundingReview(approved=False, issue_codes=["fact.unsupported_claim"]),
-    )
+class FailingReviewer(Fakes):
+    def review(self, payload):
+        raise RuntimeError("down")
+
+
+@pytest.mark.parametrize(
+    ("fakes", "issue"),
+    [
+        (Fakes(review=GroundingReview(approved=False, issue_codes=["fact.unsupported_claim"])), "fact.unsupported_claim"),
+        (Fakes(answer=RuntimeError("down")), "fact.model_unavailable"),
+        (Fakes(answer="   "), "fact.empty_answer"),
+        (FailingReviewer(), "fact.review_unavailable"),
+    ],
+    ids=["rejected", "writer_down", "empty", "reviewer_down"],
+)
+def test_every_failed_answer_lists_the_official_pages_found(fakes, issue):
+    fakes.hits = [
+        SearchHit(title="a", url="https://www.mofa.go.jp/visa", snippet="x"),
+        SearchHit(title="b", url="https://www.isa.go.jp/en", snippet="y"),
+    ]
     service = fakes.service()
     route = visa_route()
     result = service.retrieve(route, TRIP)
 
     answer = service.answer(route, TRIP, result.evidence, result.validation)
 
-    assert answer.issue_codes == ("fact.unsupported_claim",)
+    assert answer.issue_codes == (issue,)
+    assert answer.text == safe_unverified_message(
+        route, ["https://www.mofa.go.jp/visa", "https://www.isa.go.jp/en"]
+    )
 
 
 def test_general_knowledge_skips_review_and_trip_questions_get_the_itinerary():
@@ -605,3 +724,28 @@ def test_answer_without_retrieval_counts_as_missing_evidence():
     update = asyncio.run(run_factual_answer(state, service=fakes.service()))
 
     assert update["factual_issue_codes"] == ["fact.evidence_missing"]
+
+
+def test_workflow_fallback_carries_the_official_pages_from_retrieval():
+    hits = [
+        SearchHit(title="MOFA", url="https://www.mofa.go.jp/visa", snippet="Online appointments required."),
+        SearchHit(title="ISA", url="https://www.isa.go.jp/en", snippet="For details of required documents."),
+    ]
+    fakes = Fakes(
+        classification=classified(RequestType.FACTUAL, FactualDomain.VISA_ENTRY),
+        hits=hits,
+        answer="Malaysians can stay 90 days visa-free.",
+        review=GroundingReview(approved=False, issue_codes=["fact.unsupported_claim"]),
+    )
+    service = fakes.service()
+    state = agent_state("Do I need a visa?")
+
+    for step in (run_factual_routing, run_factual_retrieval):
+        state = state.model_copy(update=asyncio.run(step(state, service=service)))
+    update = asyncio.run(run_factual_answer(state, service=service))
+
+    message = update["messages"][0]
+    assert "90 days" not in message.content
+    assert message.content.endswith("- https://www.mofa.go.jp/visa\n- https://www.isa.go.jp/en")
+    assert message.additional_kwargs == {"server_owned": "factual_qa"}
+    assert update["factual_issue_codes"] == ["fact.unsupported_claim"]
