@@ -28,8 +28,13 @@
     "tailwindcss": "4.1.12",
     "tw-animate-css": "1.3.8",
     "typescript": "^5.8.3",
-    "vite": "6.4.3",
-    "vitest": "3.2.6"
+    "vite": "6.4.5",
+    "vitest": "5.0.5"
+  },
+  "overrides": {
+    "@firebase/firestore": {
+      "@grpc/grpc-js": "1.13.7"
+    }
   },
   "allowScripts": {
     "@tailwindcss/oxide@4.1.12": true,
