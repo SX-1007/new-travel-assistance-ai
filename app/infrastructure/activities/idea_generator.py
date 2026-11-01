@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from app.infrastructure.llm.chat import ChatBackend, build_chat_model
 from app.modules.activities.models import IdeaRequest, PlaceIdea
+from app.modules.activities.policies import MIN_PLACES_PER_DAY
 from app.shared.logging import safe_log
 
 
@@ -38,9 +39,9 @@ and progress in one direction. Do not zig-zag.
 5. Each day starts from the hotel. Respect each day's place limit in the day \
 list below: it reflects real flight times. A day marked "travel day" gets NO \
 places at all (the traveller is in transit); a limited day only fits that many.
-6. Pacing: 'relaxed' => 2-3 places/day; 'moderate' => 4-6; 'packed' => 6-8, \
-but never more than the day's limit or {max_per_day}. Plan at least 2 places on \
-every day whose limit allows it.
+6. Pacing: 'relaxed' => 3 places/day; 'moderate' => 4-6; 'packed' => 6-8, \
+but never more than the day's limit or {max_per_day}. Every day that is not a \
+travel day MUST get at least its minimum from the day list (3 on a full day).
 7. Include 1-2 restaurants per day (lunch/dinner) that respect dietary needs.
 8. Estimate each place's TOTAL cost for the whole party ({num_people} people) in \
 the DESTINATION currency. Keep the SUM of attraction costs <= {activity_budget} \
@@ -67,12 +68,13 @@ Plan the places for this trip:
 """
 
 _RESCUE_SYSTEM = """\
-You are repairing missing activity days in an existing travel itinerary. \
-Generate NEW real, searchable ATTRACTIONS or RESTAURANTS only for the requested \
-missing day numbers.
+You are repairing itinerary days that have too few places. Generate NEW real, \
+searchable ATTRACTIONS or RESTAURANTS only for the requested day numbers; they \
+are added to the places those days already have.
 
 Hard rules:
-1. Return places ONLY for days in: {missing_days}.
+1. Return places ONLY for days in: {missing_days}, and at least the day's \
+minimum from the day list for each of them (3 on a full day).
 2. Every place must be a real Google-Maps-searchable venue in {country}.
 3. Set `city` to exactly one value from: {cities}.
 4. Prefer well-known places with unambiguous names so verification succeeds.
@@ -83,10 +85,10 @@ within {food_budget} (destination currency, whole party).
 """
 
 _RESCUE_HUMAN = """\
-Repair these missing itinerary days:
+Add places to these itinerary days:
 - Destination country: {country}
 - Cities/areas: {cities}
-- Missing day numbers: {missing_days}
+- Day numbers needing places: {missing_days}
 - Days (date and place limit): {dates}
 - Party size: {num_people}
 - Hotel: {hotel_name}
@@ -163,13 +165,21 @@ def _common_inputs(request: IdeaRequest) -> dict[str, Any]:
 
 
 def _day_list(request: IdeaRequest) -> str:
-    """``Day 1 (2026-12-10): travel day, no places; Day 2 (...): up to 8 places``."""
+    """``Day 1 (2026-12-10): travel day, no places; Day 2 (...): 3 to 8 places``."""
 
     limits = request.day_limits or (request.max_per_day,) * len(request.dates)
     entries = []
 
     for index, (day_date, limit) in enumerate(zip(request.dates, limits), start=1):
-        allowance = "travel day, no places" if limit <= 0 else f"up to {min(limit, request.max_per_day)} places"
+        most = min(limit, request.max_per_day)
+        least = min(MIN_PLACES_PER_DAY, most)
+
+        if limit <= 0:
+            allowance = "travel day, no places"
+        elif least == most:
+            allowance = f"exactly {most} place{'s' if most > 1 else ''}"
+        else:
+            allowance = f"{least} to {most} places"
         entries.append(f"Day {index} ({day_date or 'date unknown'}): {allowance}")
 
     return "; ".join(entries) or "unknown"

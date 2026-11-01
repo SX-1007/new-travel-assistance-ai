@@ -19,7 +19,12 @@ from typing import Any, Literal, TypeVar
 from pydantic import ValidationError
 
 from app.modules.booking.flights import normalise_iata_code
-from app.modules.booking.hotels import normalise_hotel_coordinates
+from app.modules.booking.hotels import (
+    calculate_total_nights,
+    hotel_check_in,
+    hotel_nights,
+    normalise_hotel_coordinates,
+)
 from app.modules.booking.models import (
     BookingTrip,
     FlightResult,
@@ -133,16 +138,23 @@ class BookingPlanningService:
                 source="assessment",
             )
 
-        outbound_options, return_options, hotel_options = self._search_all(trip)
+        outbound_options, return_options = self._search_flights(trip)
 
         outbound, returning = pick_flight_pair(
             outbound_options,
             return_options,
             budget_cap(trip.transportation_budget),
         )
+        # The hotel is searched from the night the chosen flight lands.
+        check_in = hotel_check_in(trip.start_date, trip.end_date, outbound)
+        nights = calculate_total_nights(check_in, trip.end_date)
+        hotel_options = _safe_results(
+            lambda: self._search_hotels(trip, check_in=check_in) if nights > 0 else [],
+            "booking.hotel_search_failed",
+        )
         hotel = pick_hotel(
             hotel_options,
-            nightly_cap(trip.accommodation_budget, trip.nights),
+            nightly_cap(trip.accommodation_budget, nights),
         )
 
         missing = tuple(
@@ -150,7 +162,7 @@ class BookingPlanningService:
             for label, found in (
                 ("outbound_flight", outbound is not None),
                 ("return_flight", returning is not None),
-                ("hotel", hotel is not None or trip.nights == 0),
+                ("hotel", hotel is not None or nights == 0),
             )
             if not found
         )
@@ -199,17 +211,19 @@ class BookingPlanningService:
 
     # ── Internals ───────────────────────────────────────────────────
 
-    def _search_all(
+    def _search_flights(
         self,
         trip: BookingTrip,
-    ) -> tuple[list[FlightResult], list[FlightResult], list[HotelResult]]:
-        """Outbound, return and hotel searches in parallel, unfiltered.
+    ) -> tuple[list[FlightResult], list[FlightResult]]:
+        """Outbound and return searches in parallel, unfiltered.
 
         Budget preference is applied afterwards, so a tight budget degrades
-        to "cheapest real option, flagged" instead of an empty slot.
+        to "cheapest real option, flagged" instead of an empty slot. The
+        hotel waits for the chosen outbound flight: its check-in date
+        depends on when that flight lands.
         """
 
-        with ThreadPoolExecutor(max_workers=3, thread_name_prefix="booking") as executor:
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="booking") as executor:
             outbound = executor.submit(
                 _safe_results,
                 lambda: self._search_leg(trip, outbound=True),
@@ -220,13 +234,8 @@ class BookingPlanningService:
                 lambda: self._search_leg(trip, outbound=False),
                 "booking.return_search_failed",
             )
-            hotels = executor.submit(
-                _safe_results,
-                lambda: self._search_hotels(trip) if trip.nights > 0 else [],
-                "booking.hotel_search_failed",
-            )
 
-            return outbound.result(), returning.result(), hotels.result()
+            return outbound.result(), returning.result()
 
     def _search_leg(self, trip: BookingTrip, *, outbound: bool) -> list[FlightResult]:
         return self._flights.search_flights(
@@ -238,10 +247,10 @@ class BookingPlanningService:
             adults=trip.adults,
         )
 
-    def _search_hotels(self, trip: BookingTrip) -> list[HotelResult]:
+    def _search_hotels(self, trip: BookingTrip, *, check_in: str) -> list[HotelResult]:
         return self._hotels.search_hotels(
             destination=trip.hotel_destination,
-            check_in=trip.start_date,
+            check_in=check_in,
             check_out=trip.end_date,
             currency=trip.currency,
             max_price_per_night=None,
@@ -282,7 +291,7 @@ class BookingPlanningService:
         ):
             return None
 
-        if trip.nights == 0:
+        if hotel_nights(trip.start_date, trip.end_date, outbound) == 0:
             return (outbound, returning, None) if hotel is None else None
 
         if (
@@ -355,8 +364,13 @@ class BookingPlanningService:
         *,
         itinerary: Sequence[Mapping[str, Any]],
     ) -> dict[str, Any]:
-        if trip.nights == 0:
-            return {"error": "A same-day trip has no hotel nights."}
+        days = _day_numbers(itinerary)
+        outbound = next(iter(_flight_legs(_day(itinerary, min(days)) or {})), None) if days else None
+        check_in = hotel_check_in(trip.start_date, trip.end_date, outbound)
+        nights = calculate_total_nights(check_in, trip.end_date)
+
+        if nights == 0:
+            return {"error": "This trip has no hotel nights."}
 
         current = next(
             (
@@ -366,10 +380,10 @@ class BookingPlanningService:
             ),
             None,
         )
-        cap = nightly_cap(trip.accommodation_budget, trip.nights)
+        cap = nightly_cap(trip.accommodation_budget, nights)
 
         options = _safe_results(
-            lambda: self._search_hotels(trip),
+            lambda: self._search_hotels(trip, check_in=check_in),
             "booking.alternative_hotel_failed",
         )
 

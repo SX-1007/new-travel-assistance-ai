@@ -102,6 +102,29 @@ def test_missing_prices_are_rejected():
         )
 
 
+def test_nights_before_the_outbound_flight_lands_are_not_counted():
+    # Found live: KUL 19:15 on day 1, HND 01:00 on day 3. The night of day 1
+    # is spent in the air; the night of day 2 gives a bed on landing.
+    assessment = build_assessment(
+        TRIP,
+        base_currency="MYR",
+        destination_currency="JPY",
+        exchange_rate=32.0,
+        outbound_flight={"price": 40000.0, "arrival_time": "2026-11-03 01:00"},
+        return_flight={"price": 35000.0},
+        hotel={"price_per_night": 50000.0},
+        now=NOW,
+    )
+
+    assert assessment.evidence.hotel_nights == 3  # 2, 3 and 4 Nov; not 1 Nov
+    assert assessment.minimum_destination_budget == pytest.approx(150000 / 0.35)
+    assert assessment_matches_trip(assessment, TRIP, now=NOW)
+    # Evidence claiming the full stay no longer adds up.
+    padded = assessment.model_dump()
+    padded["evidence"]["hotel_nights"] = 4
+    assert not assessment_matches_trip(padded, TRIP, now=NOW)
+
+
 def test_matches_only_the_exact_unexpired_untampered_trip():
     assessment = make_assessment()
     assert assessment_matches_trip(assessment, TRIP, now=NOW)

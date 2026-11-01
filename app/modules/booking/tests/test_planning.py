@@ -12,6 +12,7 @@ from app.modules.booking.models import (
     HotelLocation,
     HotelResult,
 )
+from app.modules.booking.hotels import hotel_check_in
 from app.modules.booking.selection import nightly_cap, pick_hotel
 from app.modules.booking.service import BookingPlanningService
 from app.modules.budget.assessment import build_assessment
@@ -113,6 +114,66 @@ def test_skeleton_from_search_matches_public_contract():
     # Searches are unfiltered; budget preference is applied afterwards.
     assert all(call[4] is None for call in flights.calls)
     assert hotels.calls[0]["destination"] == "Tokyo, Japan"
+
+
+def long_flight(number, price, arrives):
+    """KUL 19:15 on 1 Nov → HND at ``arrives`` (found live: a ~30 h journey)."""
+    return FlightResult(
+        airline="AirTest",
+        flight_number=number,
+        price=price,
+        departure_airport=FlightAirport(id="KUL", name="KUL airport", time="2026-11-01 19:15"),
+        arrival_airport=FlightAirport(id="HND", name="HND airport", time=arrives),
+        departure_time="2026-11-01 19:15",
+        arrival_time=arrives,
+    )
+
+
+@pytest.mark.parametrize(
+    ("arrives", "check_in"),
+    [
+        ("2026-11-03 01:00", "2026-11-02"),  # small hours: the night before
+        ("2026-11-03 06:00", "2026-11-03"),
+        ("2026-11-01 23:30", "2026-11-01"),
+        ("2026-10-31 23:00", "2026-11-01"),  # never before the trip
+        ("2026-11-09 12:00", "2026-11-04"),  # never after it
+        ("not a time", "2026-11-01"),
+    ],
+)
+def test_hotel_check_in_is_the_landing_night(arrives, check_in):
+    assert hotel_check_in("2026-11-01", "2026-11-04", long_flight("L", 1, arrives)) == check_in
+
+
+def test_no_hotel_is_booked_before_the_outbound_flight_lands():
+    class LongFlights(FakeFlights):
+        def search_flights(self, *, origin, **kwargs):
+            if origin == "Malaysia":
+                return [long_flight("L1", 300, "2026-11-03 01:00")]
+            return super().search_flights(origin=origin, **kwargs)
+
+    planner, _, hotels = service(flights=LongFlights())
+
+    days = planner.plan_skeleton(trip()).itinerary
+
+    # Lands 01:00 on day 3: day 1 is in the air, day 2's night has the bed.
+    assert [d["hotel"]["hotel_name"] if d["hotel"] else None for d in days] == [
+        None, "Budget Inn", "Budget Inn", None,
+    ]
+    assert [d["day_total_cost"] for d in days] == [300.0, 80.0, 80.0, 250.0]
+    # The hotel is searched for exactly those nights.
+    assert (hotels.calls[0]["check_in"], hotels.calls[0]["check_out"]) == ("2026-11-02", "2026-11-04")
+    for day in days:
+        DailyItinerary.model_validate(day)
+
+
+def test_hotel_alternatives_use_the_landing_night():
+    planner, _, hotels = service()
+    itinerary = planner.plan_skeleton(trip()).itinerary
+    itinerary[0]["flight"] = [long_flight("L1", 300, "2026-11-03 01:00").model_dump(mode="json")]
+
+    planner.search_alternatives(trip(), category="hotel", day=2, itinerary=itinerary)
+
+    assert hotels.calls[-1]["check_in"] == "2026-11-02"
 
 
 def test_over_budget_choices_are_flagged_not_dropped():

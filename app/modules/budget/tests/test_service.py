@@ -48,9 +48,11 @@ class FakeHotels:
     def __init__(self, results=None):
         self.results = [HotelResult(price_per_night=100.0)] if results is None else results
         self.calls = 0
+        self.check_ins = []
 
     def search_hotels(self, **kwargs):
         self.calls += 1
+        self.check_ins.append(kwargs["check_in"])
         return self.results
 
 
@@ -121,6 +123,22 @@ def test_creates_once_then_reuses_cache():
     assert first.assessment == second.assessment
     assert first.assessment.recommended_minimum_budget == 9375.0
     assert flights.calls == 2  # outbound + return, only on the first call
+
+
+def test_hotel_is_searched_from_the_night_the_outbound_flight_lands():
+    class LongFlights(FakeFlights):
+        def search_flights(self, **kwargs):
+            if kwargs["origin"] != "Malaysia":
+                return super().search_flights(**kwargs)
+            self.calls += 1
+            return [FlightResult(price=40000.0, arrival_time="2026-11-03 01:00")]
+
+    hotels = FakeHotels()
+
+    result = make_service(flights=LongFlights(), hotels=hotels).get_or_create(TRIP)
+
+    assert hotels.check_ins == ["2026-11-02"]
+    assert result.assessment.evidence.hotel_nights == 3
 
 
 def test_missing_hotel_makes_assessment_unavailable_and_releases_lease():

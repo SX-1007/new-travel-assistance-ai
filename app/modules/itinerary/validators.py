@@ -21,6 +21,7 @@ from pydantic import (
     ValidationError,
 )
 
+from app.modules.booking.hotels import hotel_check_in
 from app.modules.itinerary.activity_identity import (
     find_duplicate_activity_paths,
 )
@@ -159,6 +160,8 @@ def validate_itinerary_candidate(
             )
 
     expected_numbers = list(expected_by_day)
+    # Nights before the outbound flight lands have no hotel.
+    first_hotel_night = _first_hotel_night(observed, expected_by_day, expected_numbers)
     if observed_day_numbers != expected_numbers:
         _add_issue(
             issues,
@@ -196,7 +199,11 @@ def validate_itinerary_candidate(
         )
         is_first_day = expected_day is not None and day_number == expected_numbers[0]
         is_last_day = expected_day is not None and day_number == expected_numbers[-1]
-        requires_hotel_night = expected_day is not None and not is_last_day
+        requires_hotel_night = (
+            expected_day is not None
+            and not is_last_day
+            and expected_day.date >= first_hotel_night
+        )
         hotel_points, hotel_cost = _validate_hotel(
             issues,
             requirements,
@@ -506,6 +513,22 @@ def _validate_day_activities(
     return points, activity_cost
 
 
+def _first_hotel_night(
+    observed: Mapping[int, tuple[int, Mapping[str, Any]]],
+    expected_by_day: Mapping[int, Any],
+    expected_numbers: Sequence[int],
+) -> str:
+    """The first night that needs a hotel, from day 1's outbound flight."""
+    if not expected_numbers:
+        return ""
+    start = expected_by_day[expected_numbers[0]].date
+    end = expected_by_day[expected_numbers[-1]].date
+    first_day = observed.get(expected_numbers[0])
+    legs = first_day[1].get("flight") if first_day is not None else None
+    outbound = legs[0] if isinstance(legs, list) and legs else legs
+    return hotel_check_in(start, end, outbound)
+
+
 def _validate_hotel(
     issues: list[ValidationIssue],
     requirements: TripRequirements,
@@ -533,7 +556,7 @@ def _validate_hotel(
             issues,
             "hotel.unexpected",
             f"{day_path}.hotel",
-            "Checkout and zero-night days must not contain a hotel object.",
+            "Checkout, zero-night and before-arrival days must not contain a hotel object.",
         )
         return [], 0.0
     hotel_cost = 0.0

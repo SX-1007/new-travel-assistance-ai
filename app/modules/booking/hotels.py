@@ -7,12 +7,67 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
-from datetime import date
-from typing import Any
+from datetime import date, datetime, time, timedelta
+from typing import Any, Final
 
 from app.modules.booking.models import HotelLocation, HotelResult
 from app.modules.booking.ports import HotelLocationVerifierPort
 from app.modules.booking.validation import parse_budget_cap
+
+
+# Landing before this local time still books the night before, so the room
+# is there when the traveller arrives in the small hours.
+EARLY_ARRIVAL_CUTOFF: Final = time(6, 0)
+
+
+def hotel_check_in(start_date: str, end_date: str, outbound: Any) -> str:
+    """The first hotel night: the outbound flight's landing date, or the night
+    before when it lands before 06:00 (local airport time).
+
+    A long journey can land a day or more after the trip starts; nights
+    before that are not booked or charged. Without a readable arrival time
+    it is the trip's start date, and it never falls outside the trip.
+    """
+    try:
+        start = date.fromisoformat(start_date)
+        end = date.fromisoformat(end_date)
+    except (TypeError, ValueError):
+        return start_date
+
+    arrival = _arrival_time(outbound)
+    if arrival is None:
+        return start_date
+
+    first_night = arrival.date()
+    if arrival.time() < EARLY_ARRIVAL_CUTOFF:
+        first_night -= timedelta(days=1)
+
+    return min(max(first_night, start), end).isoformat()
+
+
+def hotel_nights(start_date: str, end_date: str, outbound: Any) -> int:
+    """Nights from the first hotel night (``hotel_check_in``) to the end date."""
+    return calculate_total_nights(hotel_check_in(start_date, end_date, outbound), end_date)
+
+
+def _arrival_time(flight: Any) -> datetime | None:
+    if not isinstance(flight, Mapping) and callable(getattr(flight, "model_dump", None)):
+        flight = flight.model_dump(mode="json")
+    if not isinstance(flight, Mapping):
+        return None
+
+    airport = flight.get("arrival_airport")
+    raw = flight.get("arrival_time") or (airport.get("time") if isinstance(airport, Mapping) else None)
+    if not isinstance(raw, str):
+        return None
+
+    try:
+        parsed = datetime.fromisoformat(raw.strip())
+    except ValueError:
+        return None
+
+    # Local airport time: compare as naive wall-clock time.
+    return parsed.replace(tzinfo=None)
 
 
 def calculate_total_nights(start_date: str, end_date: str) -> int:
@@ -125,7 +180,10 @@ def filter_hotels_by_budget(
 
 
 __all__ = [
+    "EARLY_ARRIVAL_CUTOFF",
     "calculate_total_nights",
+    "hotel_check_in",
+    "hotel_nights",
     "normalise_hotel_coordinates",
     "normalise_hotel_city",
     "requested_hotel_city",

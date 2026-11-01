@@ -25,6 +25,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from app.modules.booking.flights import normalise_iata_code
+from app.modules.booking.hotels import hotel_check_in
 from app.modules.booking.models import FlightResult, HotelResult
 from app.modules.booking.selection import flight_identity, hotel_identity, money
 from app.modules.itinerary.models import ActivityResult
@@ -339,7 +340,8 @@ def _replace_flight(
         legs[position] = replacement
         day["flight"] = legs
 
-    return {day["day"]}
+    # A new outbound flight can land on another night: move the hotel nights.
+    return {day["day"]} | _sync_hotel_nights(itinerary)
 
 
 def _replace_hotel(
@@ -359,7 +361,7 @@ def _replace_hotel(
 
     # Alternatives are searched and priced for the whole stay, so the new
     # hotel replaces every overnight day, not just the day mentioned.
-    overnight = [day for day in itinerary if not _is_checkout(itinerary, day)]
+    overnight = _hotel_night_days(itinerary)
 
     if not overnight or len(itinerary) == 1:
         raise _Rejected("This trip has no hotel nights.", code="no_hotel_nights")
@@ -370,6 +372,54 @@ def _replace_hotel(
         day["hotel"] = copy.deepcopy(replacement)
 
     return {day["day"] for day in overnight}
+
+
+def _hotel_night_days(itinerary: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Days that need a hotel: not checkout, and not before the outbound
+    flight lands (``hotel_check_in``)."""
+
+    dated = sorted(
+        (day for day in itinerary if isinstance(day.get("date"), str)),
+        key=lambda day: day["date"],
+    )
+
+    if not dated:
+        return []
+
+    first_legs = _boundary_days(itinerary)[0].get("flight") or []
+    outbound = first_legs[0] if isinstance(first_legs, list) and first_legs else None
+    first_night = hotel_check_in(dated[0]["date"], dated[-1]["date"], outbound)
+
+    return [
+        day
+        for day in itinerary
+        if not _is_checkout(itinerary, day) and str(day.get("date", "")) >= first_night
+    ]
+
+
+def _sync_hotel_nights(itinerary: list[dict[str, Any]]) -> set[int]:
+    """Add or remove the stay's hotel so exactly the hotel-night days carry
+    it; returns the days that changed."""
+
+    stay = next((day["hotel"] for day in itinerary if isinstance(day.get("hotel"), Mapping)), None)
+
+    if stay is None:
+        return set()
+
+    nights = {id(day) for day in _hotel_night_days(itinerary)}
+    changed: set[int] = set()
+
+    for day in itinerary:
+        has_hotel = isinstance(day.get("hotel"), Mapping)
+
+        if id(day) in nights and not has_hotel:
+            day["hotel"] = copy.deepcopy(dict(stay))
+            changed.add(day["day"])
+        elif id(day) not in nights and has_hotel:
+            day["hotel"] = None
+            changed.add(day["day"])
+
+    return changed
 
 
 def _same_place(details: Mapping[str, Any], option: Mapping[str, Any]) -> bool:

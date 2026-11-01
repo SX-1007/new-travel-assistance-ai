@@ -434,6 +434,29 @@ describe('frontend API client', () => {
     expect(api.isCompleteItinerary([{ ...completeDay, activities: [], route: null }])).toBe(false);
   });
 
+  it('allows an empty day with no flight of its own while the traveller is still in transit', async () => {
+    const api = await loadApi();
+    // Found live: KUL 19:15 on day 1 → HND 01:00 on day 3 left day 2 in
+    // transit; the backend planned nothing that day and the plan was refused.
+    const longFlight = (arrival: string) => ({
+      airline: 'Scoot',
+      departure_airport: { id: 'KUL', name: 'Kuala Lumpur International Airport', time: '2026-08-01 19:15' },
+      arrival_airport: { id: 'HND', name: 'Haneda Airport', time: arrival },
+      departure_time: '2026-08-01 19:15',
+      arrival_time: arrival,
+      price: 64762,
+    });
+    const trip = (arrival: string) => [
+      { ...completeDay, flight: [longFlight(arrival)], activities: [], route: null },
+      { ...completeDay, day: 2, date: '2026-08-02', activities: [], route: null },
+      { ...completeDay, day: 3, date: '2026-08-03' },
+    ];
+
+    expect(api.isCompleteItinerary(trip('2026-08-03 01:00'))).toBe(true);
+    // Landing the evening before leaves day 2 a full day on the ground.
+    expect(api.isCompleteItinerary(trip('2026-08-01 23:00'))).toBe(false);
+  });
+
   it('accepts the unmutated destination/map live-success baseline', async () => {
     const api = await loadApi();
     expect(api.hasCompleteLiveSuccessSnapshot(completeLiveSuccess)).toBe(true);

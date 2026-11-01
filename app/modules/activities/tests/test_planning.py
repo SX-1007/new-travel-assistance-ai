@@ -23,11 +23,13 @@ from app.modules.activities.models import (
 )
 from app.modules.activities.policies import (
     clamp_costs,
+    generic_fallback_ideas,
     merge_into_itinerary,
     place_type_for,
     preferences_from_profile,
 )
 from app.modules.activities.service import ActivityPlanningService, ActivitySearchService
+from app.modules.itinerary.activity_rescue import short_activity_days
 from app.modules.itinerary.models import ActivityResult
 from app.modules.places.exceptions import PlaceSearchUnavailable
 from app.modules.places.models import PlaceCandidate
@@ -130,10 +132,16 @@ def skeleton(days=2):
     ]
 
 
-def make(ideas, *, max_searches=40):
+def make(ideas, *, max_searches=40, min_places=1):
+    # min_places=1: most tests here are about other rules, and top-ups to the
+    # real minimum (3) would add generic places to their results. The
+    # minimum has its own tests below.
     search = FakeSearch()
     places = VerifiedPlaceSearch(search=search, geocoder=FakeGeocoder(), locator=FakeLocator())
-    return ActivityPlanningService(ideas=ideas, places=places, max_searches=max_searches), search
+    planner = ActivityPlanningService(
+        ideas=ideas, places=places, max_searches=max_searches, min_places_per_day=min_places
+    )
+    return planner, search
 
 
 def request(itinerary, **overrides):
@@ -211,6 +219,53 @@ def test_only_empty_days_are_rescued():
     assert names(result.itinerary[0]) == ["Senso-ji"]
     assert names(result.itinerary[1]) == ["Ueno Park"]
     assert result.rescue_rounds_used == 1
+
+
+def test_short_days_are_topped_up_to_the_minimum():
+    # Found live: a full day kept the one place that verified.
+    ideas = FakeIdeas(
+        initial=[idea("Senso-ji", 1, 1), idea("Meiji Shrine", 2, 1), idea("Tokyo Tower", 2, 2),
+                 idea("Ueno Park", 2, 3)],
+        rescues=[[idea("Ichiran", 1, 1, place_type="restaurant")], []],
+    )
+    planner, _ = make(ideas, min_places=3)
+
+    result = planner.plan(request(skeleton()))
+    day1, day2 = result.itinerary
+
+    # Day 2 already has 3; only day 1 (2 short) is rescued, and the last
+    # round's generic search fills what the ideas couldn't.
+    assert [call[0] for call in ideas.rescue_calls] == [(1,), (1,)]
+    assert names(day1) == ["Senso-ji", "Ichiran Shibuya", "Generic A"]
+    assert names(day2) == ["Meiji Shrine", "Tokyo Tower", "Ueno Park"]
+    assert result.missing_days == ()
+
+
+def test_a_day_still_short_after_rescue_is_kept_not_failed():
+    ideas = FakeIdeas(initial=[idea("Senso-ji", 1, 1)], rescues=[[], []])
+    # One paid search: the exact lookup; nothing left for generic searches.
+    planner, _ = make(ideas, min_places=3, max_searches=1)
+
+    result = planner.plan(request(skeleton(1)))
+
+    assert names(result.itinerary[0]) == ["Senso-ji"]
+    assert result.missing_days == ()
+
+
+def test_generic_fallback_alternates_attractions_and_restaurants():
+    ideas = generic_fallback_ideas({1: 3, 2: 0}, cities=["Tokyo"])
+
+    assert [(i.day, i.place_type) for i in ideas] == [
+        (1, "attraction"), (1, "restaurant"), (1, "attraction"),
+    ]
+
+
+def test_short_activity_days_counts_what_each_day_still_needs():
+    by_day = {1: [{}], 2: [{}, {}, {}], 3: []}
+
+    assert short_activity_days((1, 2, 3), by_day, {1: 3, 2: 3, 3: 2}) == {1: 2, 3: 2}
+    # Without targets only empty days are short.
+    assert short_activity_days((1, 2, 3), by_day) == {3: 1}
 
 
 def test_generic_fallback_gives_each_day_a_different_place():

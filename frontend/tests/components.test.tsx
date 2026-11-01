@@ -621,6 +621,73 @@ describe('ItineraryView structured renderer', () => {
       .toHaveAttribute('href', 'https://book.test/return');
   });
 
+  it('shows flights in their own section and collapses days spent in transit', () => {
+    // Found live: KUL 19:15 → HND 01:00 two days later; day 1 is in the air.
+    const snapshot = completeSnapshot([
+      {
+        day: 1,
+        date: '2026-08-01',
+        flight: [{
+          airline: 'Long Haul Air',
+          departure_airport: { id: 'KUL', name: 'KLIA' },
+          arrival_airport: { id: 'HND', name: 'Haneda' },
+          departure_time: '2026-08-01 19:15',
+          arrival_time: '2026-08-03 01:00',
+          price: 500,
+        }],
+        day_total_cost: 500,
+      },
+      {
+        day: 2,
+        date: '2026-08-02',
+        hotel: { hotel_name: 'Sakura Inn', price_per_night: 80 },
+        day_total_cost: 80,
+      },
+      { day: 3, date: '2026-08-03', activities: [{ name: 'Senso-ji' }], day_total_cost: 25 },
+    ], 605);
+    // Days 1 and 2 have no time at the destination: no places, no map points.
+    for (const day of [1, 2]) {
+      snapshot.itinerary[day - 1].activities = [];
+      snapshot.maps[String(day)].features = [];
+    }
+    render(<ItineraryView
+      itinerary={snapshot.itinerary} maps={snapshot.maps} budget={snapshot.budget}
+      destinationCountryCode={snapshot.destination_country_code}
+    />);
+
+    const flights = screen.getByRole('region', { name: 'Flights' });
+    expect(within(flights).getByRole('group', { name: 'Outbound flight ticket' }))
+      .toHaveTextContent('Long Haul Air');
+
+    const inAir = screen.getByRole('group', { name: 'Day 1 in transit' });
+    expect(inAir).toHaveTextContent('In transit');
+    // The flight's price is in the Flights section, not the day.
+    expect(inAir).not.toHaveTextContent('500');
+    expect(within(inAir).queryByRole('group', { name: /flight ticket/ })).not.toBeInTheDocument();
+
+    const landingNight = screen.getByRole('group', { name: 'Day 2 in transit' });
+    expect(landingNight).toHaveTextContent('Night at Sakura Inn');
+    expect(landingNight).toHaveTextContent('80');
+
+    expect(screen.queryByRole('group', { name: 'Day 3 in transit' })).not.toBeInTheDocument();
+    expect(screen.getByText('Day 3')).toBeInTheDocument();
+  });
+
+  it('shows both legs of a same-day trip', () => {
+    const leg = (airline: string, from: string, to: string) => ({
+      airline,
+      departure_airport: { id: from },
+      arrival_airport: { id: to },
+      price: 100,
+    });
+    renderComplete([
+      { day: 1, flight: [leg('Morning Air', 'KUL', 'SIN'), leg('Evening Air', 'SIN', 'KUL')], day_total_cost: 200 },
+    ], 200);
+
+    expect(screen.getByRole('group', { name: 'Outbound flight ticket' })).toHaveTextContent('Morning Air');
+    expect(screen.getByRole('group', { name: 'Return flight ticket' })).toHaveTextContent('Evening Air');
+  });
+
   it('keeps one-day and middle-day legacy flight cards generic', () => {
     const legacyFlight = {
       airline: 'Legacy Air',

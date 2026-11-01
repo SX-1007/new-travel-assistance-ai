@@ -22,8 +22,9 @@ ActivityBucket = Mapping[
     Sequence[Mapping[str, Any]],
 ]
 
+# Called with {day: places still needed} and the round number.
 RescueRound = Callable[
-    [tuple[int, ...], int],
+    [Mapping[int, int], int],
     Mapping[
         int,
         Sequence[Mapping[str, Any]],
@@ -140,6 +141,34 @@ def missing_activity_days(
     return tuple(missing)
 
 
+def short_activity_days(
+    expected_days: Sequence[int],
+    by_day: ActivityBucket,
+    targets: Mapping[int, int] | None = None,
+) -> dict[int, int]:
+    """Day → how many more activities it needs to reach its target.
+
+    A day without a target needs one (only empty days are short).
+    """
+
+    short: dict[int, int] = {}
+
+    for raw_day in expected_days:
+        try:
+            day = int(raw_day)
+        except (TypeError, ValueError):
+            continue
+
+        activities = by_day.get(day)
+        count = len(activities) if isinstance(activities, Sequence) and not isinstance(activities, (str, bytes)) else 0
+        needed = max(1, (targets or {}).get(day, 1)) - count
+
+        if needed > 0:
+            short[day] = needed
+
+    return short
+
+
 @dataclass(frozen=True)
 class ActivityRescueResult:
     """Result of deterministic cross-day activity rescue."""
@@ -149,6 +178,7 @@ class ActivityRescueResult:
         list[dict[str, Any]],
     ]
 
+    # Days still empty: the plan can't use them.
     missing_days: tuple[
         int,
         ...,
@@ -158,6 +188,9 @@ class ActivityRescueResult:
 
     removed_duplicates: int
 
+    # Days with some activities but fewer than their target: usable.
+    short_days: tuple[int, ...] = ()
+
 
 def rescue_activity_buckets(
     expected_days: Sequence[int],
@@ -165,8 +198,10 @@ def rescue_activity_buckets(
     *,
     rescue_round: RescueRound,
     max_rounds: int = 3,
+    targets: Mapping[int, int] | None = None,
 ) -> ActivityRescueResult:
-    """Repair only empty days while preserving already-valid activity days.
+    """Top up days below their target (``targets``; default: empty days only)
+    while keeping every activity a day already has.
 
     ``rescue_round`` is dependency injection: this pure domain helper decides
     when rescue is required, while an outer provider/application layer decides
@@ -192,10 +227,7 @@ def rescue_activity_buckets(
             [],
         )
 
-    missing = missing_activity_days(
-        expected_days,
-        current,
-    )
+    short = short_activity_days(expected_days, current, targets)
 
     rounds_used = 0
 
@@ -203,13 +235,13 @@ def rescue_activity_buckets(
         1,
         max_rounds + 1,
     ):
-        if not missing:
+        if not short:
             break
 
         rounds_used = round_number
 
         additions = rescue_round(
-            missing,
+            dict(short),
             round_number,
         )
 
@@ -233,7 +265,7 @@ def rescue_activity_buckets(
             ) in current.items()
         }
 
-        for day in missing:
+        for day in short:
             raw_additions = (
                 additions.get(day)
                 or []
@@ -277,12 +309,9 @@ def rescue_activity_buckets(
                 [],
             )
 
-        missing = (
-            missing_activity_days(
-                expected_days,
-                current,
-            )
-        )
+        short = short_activity_days(expected_days, current, targets)
+
+    missing = missing_activity_days(expected_days, current)
 
     return ActivityRescueResult(
         by_day=current,
@@ -291,6 +320,7 @@ def rescue_activity_buckets(
         removed_duplicates=(
             removed_duplicates
         ),
+        short_days=tuple(day for day in short if day not in missing),
     )
 
 
@@ -299,4 +329,5 @@ __all__ = [
     "deduplicate_activity_buckets",
     "missing_activity_days",
     "rescue_activity_buckets",
+    "short_activity_days",
 ]

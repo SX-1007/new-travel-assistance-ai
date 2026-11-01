@@ -18,7 +18,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from app.modules.booking.hotels import calculate_total_nights
+from app.modules.booking.hotels import hotel_nights
 from app.modules.budget.models import (
     BudgetAssessment,
     BudgetEvidence,
@@ -29,7 +29,8 @@ from app.modules.budget.policies import DEFAULT_BUDGET_RATIOS
 
 # Stored inside every assessment and its cache key. Bump it whenever the
 # formula or DEFAULT_BUDGET_RATIOS change so stale assessments are ignored.
-CALCULATION_VERSION = "allocation-v1"
+# v2: hotel nights start the night the outbound flight lands.
+CALCULATION_VERSION = "allocation-v2"
 ASSESSMENT_TTL_HOURS = 1
 
 _PRICE_REL_TOL = 1e-12
@@ -121,7 +122,8 @@ def build_assessment(
     if rate is None:
         raise ValueError("Invalid exchange rate.")
 
-    nights = calculate_total_nights(trip.start_date, trip.end_date)
+    # No hotel nights before the outbound flight lands.
+    nights = hotel_nights(trip.start_date, trip.end_date, outbound_flight)
 
     outbound_price = finite_positive(outbound_flight.get("price"))
     return_price = finite_positive(return_flight.get("price"))
@@ -198,7 +200,7 @@ def assessment_arithmetic_is_valid(assessment: BudgetAssessment) -> bool:
         return False
 
     try:
-        nights = calculate_total_nights(assessment.start_date, assessment.end_date)
+        nights = hotel_nights(assessment.start_date, assessment.end_date, evidence.outbound_flight)
     except ValueError:
         return False
     if evidence.hotel_nights != nights:

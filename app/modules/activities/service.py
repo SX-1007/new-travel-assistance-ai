@@ -43,6 +43,7 @@ from app.modules.activities.policies import (
     MAX_EXCLUDED_NAMES,
     MAX_PLACES_PER_DAY,
     MAX_RESCUE_ROUNDS,
+    MIN_PLACES_PER_DAY,
     MAX_SEARCHES_PER_PLAN,
     broad_queries,
     build_activity,
@@ -245,14 +246,19 @@ class ActivityPlanningService:
         places: VerifiedPlaceSearch,
         max_searches: int = MAX_SEARCHES_PER_PLAN,
         max_workers: int = LOOKUP_WORKERS,
+        min_places_per_day: int = MIN_PLACES_PER_DAY,
     ) -> None:
         if max_workers < 1:
             raise ValueError("max_workers must be at least 1")
+
+        if min_places_per_day < 1:
+            raise ValueError("min_places_per_day must be at least 1")
 
         self._ideas = ideas
         self._places = places
         self._max_searches = max_searches
         self._max_workers = max_workers
+        self._min_places = min_places_per_day
 
     def plan(self, request: ActivityPlanRequest) -> ActivityPlanResult:
         itinerary = [dict(day) for day in request.itinerary if isinstance(day, Mapping)]
@@ -351,8 +357,9 @@ class ActivityPlanningService:
 
         accepted_names.update(_names(by_day))
 
-        # ── 2. Rescue only the days that are still empty ──────────────
-        def rescue_round(missing: tuple[int, ...], round_number: int) -> ActivitiesByDay:
+        # ── 2. Top up the days below their target ─────────────────────
+        def rescue_round(shortfall: Mapping[int, int], round_number: int) -> ActivitiesByDay:
+            missing = tuple(shortfall)
             excluded = sorted(name for name in tried_names | accepted_names if name)
 
             ideas = self._safe_ideas(
@@ -377,12 +384,13 @@ class ActivityPlanningService:
             # Built only AFTER model output passed the trust boundary, so a
             # discarded idea (wrong city/day) cannot suppress the fallback.
             if final_round:
+                still_needed = {
+                    day: needed - len(rescued.get(day, ()))
+                    for day, needed in shortfall.items()
+                    if needed > len(rescued.get(day, ()))
+                }
                 fallback = self._verify(
-                    generic_fallback_ideas(
-                        missing,
-                        cities=trusted_cities,
-                        covered_days=rescued,
-                    ),
+                    generic_fallback_ideas(still_needed, cities=trusted_cities),
                     lookups=lookups,
                     country=country,
                     mode="broad",
@@ -401,6 +409,7 @@ class ActivityPlanningService:
             by_day,
             rescue_round=rescue_round,
             max_rounds=MAX_RESCUE_ROUNDS,
+            targets={day: min(self._min_places, limits[day]) for day in expected_days},
         )
 
         # ── 3. Final dedupe, budget clamp, projection ─────────────────
@@ -413,6 +422,10 @@ class ActivityPlanningService:
 
         if rescue.missing_days:
             safe_log(logger, logging.WARNING, "activities.rescue_exhausted")
+
+        if rescue.short_days:
+            # Usable, just fewer places than the target: not a failure.
+            safe_log(logger, logging.WARNING, "activities.days_below_target")
 
         logger.info(
             "activities.search_quota used=%d limit=%d",

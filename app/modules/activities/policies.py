@@ -17,6 +17,11 @@ from app.modules.places.policies import canonical_city, clean_text, join_query, 
 
 MAX_PLACES_PER_DAY: Final = 8
 
+# Every day with time at the destination aims for at least this many places
+# (fewer only when its hours fit fewer). Rescue rounds top up short days; a
+# day still short after them is kept, not failed.
+MIN_PLACES_PER_DAY: Final = 3
+
 # Round 1 retries specific places; round 2 also broadens to generic searches.
 MAX_RESCUE_ROUNDS: Final = 2
 
@@ -168,12 +173,12 @@ def trusted_ideas(
 
 
 def generic_fallback_ideas(
-    missing_days: Iterable[int],
+    shortfall: Mapping[int, int],
     *,
     cities: Sequence[str],
-    covered_days: Iterable[int],
 ) -> list[PlaceIdea]:
-    """One provider-grounded generic attraction per uncovered missing day.
+    """Provider-grounded generic places: ``shortfall[day]`` for each day,
+    alternating attraction and restaurant (attraction first).
 
     Cities are assigned round-robin so a multi-city trip spreads fallbacks.
     """
@@ -183,25 +188,30 @@ def generic_fallback_ideas(
     if not clean_cities:
         return []
 
-    covered = set(covered_days)
+    ideas: list[PlaceIdea] = []
 
-    return [
-        PlaceIdea(
-            name=f"popular tourist attraction in {clean_cities[(day - 1) % len(clean_cities)]}",
-            place_type="attraction",
-            city=clean_cities[(day - 1) % len(clean_cities)],
-            day=day,
-            order=1,
-            suggested_time="Flexible",
-            estimated_cost=0.0,
-            reason=(
-                "Provider-grounded fallback for a day whose specific "
-                "suggestions could not be verified."
-            ),
-        )
-        for day in missing_days
-        if day not in covered
-    ]
+    for day, needed in shortfall.items():
+        city = clean_cities[(day - 1) % len(clean_cities)]
+
+        for index in range(max(0, needed)):
+            place_type: PlaceType = "attraction" if index % 2 == 0 else "restaurant"
+            ideas.append(
+                PlaceIdea(
+                    name=f"popular {'tourist attraction' if place_type == 'attraction' else 'restaurant'} in {city}",
+                    place_type=place_type,
+                    city=city,
+                    day=day,
+                    order=index + 1,
+                    suggested_time="Flexible",
+                    estimated_cost=0.0,
+                    reason=(
+                        "Provider-grounded fallback for a day whose specific "
+                        "suggestions could not be verified."
+                    ),
+                )
+            )
+
+    return ideas
 
 
 # ── Provider queries ────────────────────────────────────────────────
@@ -348,6 +358,7 @@ __all__ = [
     "LOOKUP_WORKERS",
     "MAX_EXCLUDED_NAMES",
     "MAX_PLACES_PER_DAY",
+    "MIN_PLACES_PER_DAY",
     "MAX_RESCUE_ROUNDS",
     "MAX_SEARCHES_PER_PLAN",
     "RESTAURANT_ALIASES",

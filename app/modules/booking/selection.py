@@ -11,6 +11,7 @@ from datetime import date, timedelta
 from typing import Any, TypeVar
 
 from app.modules.booking.flights import normalise_iata_code
+from app.modules.booking.hotels import hotel_check_in
 from app.modules.booking.models import FlightResult, HotelResult
 
 
@@ -198,14 +199,17 @@ def build_skeleton(
     """One day per date: boundary flights, the hotel on overnight days,
     empty activity slots, and each day's cost.
 
-    The last day is checkout, so it has no hotel and no hotel charge.
-    A same-day trip carries both legs on day 1.
+    The last day is checkout, so it has no hotel and no hotel charge. Nights
+    before the outbound flight lands (``hotel_check_in``) have no hotel
+    either. A same-day trip carries both legs on day 1.
     """
 
     days: list[dict[str, Any]] = []
     last_day = nights + 1
+    dates = trip_dates(start_date, nights)
+    first_night = hotel_check_in(start_date, dates[-1], outbound)
 
-    for day_number, day_date in enumerate(trip_dates(start_date, nights), start=1):
+    for day_number, day_date in enumerate(dates, start=1):
         legs: list[FlightResult] = []
 
         if day_number == 1 and outbound is not None:
@@ -214,7 +218,7 @@ def build_skeleton(
         if day_number == last_day and returning is not None:
             legs.append(returning)
 
-        overnight = day_number <= nights and hotel is not None
+        overnight = day_number <= nights and hotel is not None and day_date >= first_night
 
         days.append(
             {

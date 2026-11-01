@@ -2,9 +2,10 @@
  * ItineraryView.tsx — Structured renderer for the planner's itinerary data.
  *
  * Renders the backend `draft_itinerary` (+ `daily_map_info` GeoJSON) as
- * first-class UI: per-day flight, hotel card, attraction/restaurant cards, and
- * a Mapbox static map showing all stops + the route. Users can toggle the route
- * travel profile (driving / walking / cycling).
+ * first-class UI: a Flights section for the whole trip, then per day a hotel
+ * card, attraction/restaurant cards, and a Mapbox static map showing all
+ * stops + the route. Days spent in transit collapse to one line. Users can
+ * toggle the route travel profile (driving / walking / cycling).
  *
  * Place costs are AI estimates (flagged `is_estimated`) — an "estimated" note is
  * shown wherever they appear, per the backend contract.
@@ -483,17 +484,92 @@ const RouteMap = ({
   );
 };
 
+// ── Flights (their own section, not part of any day) ────────────────
+
+const dayLegs = (day: DayItinerary): FlightItem[] =>
+  (Array.isArray(day.flight) ? day.flight : day.flight ? [day.flight as FlightItem] : [])
+    .filter(Boolean);
+
+/** Every leg in trip order: the first day's first leg is the outbound
+ * flight and the last day's last leg the return; anything else is generic. */
+const tripFlights = (itinerary: DayItinerary[]): { flight: FlightItem; label: FlightLabel }[] => {
+  const last = itinerary.length - 1;
+  return itinerary.flatMap((day, index) => {
+    const legs = dayLegs(day);
+    return legs.map((flight, legIndex) => {
+      let label: FlightLabel = 'Flight';
+      if (index === 0 && legIndex === 0 && (last > 0 || legs.length > 1)) label = 'Outbound flight';
+      else if (index === last && legIndex === legs.length - 1 && (last > 0 || legs.length > 1)) {
+        label = 'Return flight';
+      }
+      return { flight, label };
+    });
+  });
+};
+
+const FlightsSection = ({ itinerary }: { itinerary: DayItinerary[] }) => {
+  const flights = tripFlights(itinerary);
+  if (flights.length === 0) return null;
+  return (
+    <section
+      aria-label="Flights"
+      className="rounded-2xl border border-sky-200 bg-white shadow-sm"
+    >
+      <h3 className="flex items-center gap-2 border-b border-sky-100 px-5 py-3 font-bold text-slate-900">
+        <Plane size={16} className="text-sky-600" /> Flights
+      </h3>
+      <div className="space-y-3 p-4">
+        {flights.map(({ flight, label }, index) => (
+          <FlightCard key={index} flight={flight} label={label} />
+        ))}
+      </div>
+    </section>
+  );
+};
+
 // ── Day + top-level ─────────────────────────────────────────────────
+
+/** The day's own spending: flights are priced in the Flights section. */
+const dayCostWithoutFlights = (day: DayItinerary): number => {
+  const flights = dayLegs(day).reduce((sum, leg) => sum + (Number(leg.price) || 0), 0);
+  return Math.max(0, Math.round((Number(day.day_total_cost) - flights) * 100) / 100);
+};
+
+/** A day with no time at the destination: one line, not a full card. */
+const TransitDayRow = ({ day }: { day: DayItinerary }) => (
+  <div
+    role="group"
+    aria-label={`Day ${day.day} in transit`}
+    className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-5 py-2.5 text-sm"
+  >
+    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-slate-300 text-xs font-bold text-white">
+      {day.day}
+    </span>
+    <span className="font-semibold text-slate-700">Day {day.day}</span>
+    {day.date && <span className="text-xs text-slate-500">{day.date}</span>}
+    <span className="flex items-center gap-1 text-xs text-slate-500">
+      <Plane size={12} /> In transit: no time at the destination
+    </span>
+    {day.hotel?.hotel_name && (
+      <span className="flex items-center gap-1 text-xs text-indigo-600">
+        <Hotel size={12} /> Night at {day.hotel.hotel_name}
+      </span>
+    )}
+    {dayCostWithoutFlights(day) > 0 && (
+      <span className="ml-auto text-xs font-semibold text-slate-700">
+        {fmtMoney(dayCostWithoutFlights(day))}
+      </span>
+    )}
+  </div>
+);
+
 const DayBlock = ({
   day,
   fc,
-  flightLabel,
 }: {
   day: DayItinerary;
   fc: GeoJSONFeatureCollection | undefined;
-  flightLabel: FlightLabel;
 }) => {
-  const flight = Array.isArray(day.flight) ? day.flight[0] : (day.flight as any);
   // Old agent edits may contain ad-hoc partial dictionaries. Do not present
   // those as verified places; valid backend activities always carry a name and
   // an explicit attraction/restaurant type.
@@ -503,6 +579,8 @@ const DayBlock = ({
       && (activity.type === 'attraction' || activity.type === 'restaurant'),
     ),
   );
+  // Only travel days are empty (the validator allows nothing else).
+  if (activities.length === 0) return <TransitDayRow day={day} />;
   return (
     <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
       <div className="flex items-center gap-3 border-b border-slate-100 px-5 py-3">
@@ -519,24 +597,17 @@ const DayBlock = ({
         </div>
         <div className="ml-auto text-right">
           <div className="text-[10px] uppercase tracking-wider text-slate-400">Day cost</div>
-          <div className="font-bold text-slate-800">{fmtMoney(day.day_total_cost)}</div>
+          <div className="font-bold text-slate-800">{fmtMoney(dayCostWithoutFlights(day))}</div>
         </div>
       </div>
 
       <div className="space-y-3 p-4">
-        {flight && <FlightCard flight={flight} label={flightLabel} />}
         {day.hotel && <HotelCard hotel={day.hotel} />}
-        {activities.length > 0 ? (
-          <div className="space-y-2">
-            {activities.map((a, i) => (
-              <ActivityCard key={i} act={a} index={i+1} />
-            ))}
-          </div>
-        ) : flight && (
-          <p className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">
-            Travel day: the flight times leave no time for sightseeing.
-          </p>
-        )}
+        <div className="space-y-2">
+          {activities.map((a, i) => (
+            <ActivityCard key={i} act={a} index={i+1} />
+          ))}
+        </div>
         {(day.route || fc) && <RouteMap route={day.route} fc={fc} />}
       </div>
     </div>
@@ -570,23 +641,14 @@ export default function ItineraryView(props: ItineraryViewProps) {
         </span>
       </div>
       {budget && <BudgetSummary budget={budget} />}
-      {itinerary.map((day, index) => {
-        const flightLabel: FlightLabel = itinerary.length === 1
-          ? 'Flight'
-          : index === 0
-            ? 'Outbound flight'
-            : index === itinerary.length - 1
-              ? 'Return flight'
-              : 'Flight';
-        return (
-          <DayBlock
-            key={day.day}
-            day={day}
-            fc={maps?.[String(day.day)]}
-            flightLabel={flightLabel}
-          />
-        );
-      })}
+      <FlightsSection itinerary={itinerary} />
+      {itinerary.map((day) => (
+        <DayBlock
+          key={day.day}
+          day={day}
+          fc={maps?.[String(day.day)]}
+        />
+      ))}
     </div>
   );
 }

@@ -87,6 +87,33 @@ def test_flight_replace_stores_trusted_payload_and_recosts():
     assert day1["flight"][0]["over_budget"] and outcome.itinerary[-1]["flight"][0]["over_budget"]
 
 
+def test_a_later_landing_outbound_flight_moves_the_hotel_nights():
+    later = flight("L1", 320).model_copy(
+        update={"arrival_airport": FlightAirport(id="HND", time="2026-11-03 01:00")}
+    ).model_dump(mode="json")
+
+    outcome = apply_edits(
+        itinerary(nights=3),
+        [{"day": 1, "action": "replace", "category": "flight", "new_details": later}],
+        trusted_bookings=[TrustedBookingOption("flight", 1, later)],
+    )
+    days = outcome.itinerary
+
+    assert outcome.applied
+    # Lands 01:00 on day 3: day 1's night is dropped and re-costed.
+    assert [day["hotel"] is not None for day in days] == [False, True, True, False]
+    assert days[0]["day_total_cost"] == 330.0  # 320 flight + Senso-ji, no hotel
+    assert 1 in outcome.affected_days
+
+    # Swapping back to an early flight gives the night back.
+    back = apply_edits(
+        days,
+        [{"day": 1, "action": "replace", "category": "flight", "new_details": NEW_OUT}],
+        trusted_bookings=[TrustedBookingOption("flight", 1, NEW_OUT)],
+    )
+    assert [day["hotel"] is not None for day in back.itinerary] == [True, True, True, False]
+
+
 def test_untrusted_or_middle_day_flight_is_refused_and_nothing_changes():
     original = itinerary()
 

@@ -16,7 +16,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from app.modules.booking.hotels import calculate_total_nights
+from app.modules.booking.hotels import calculate_total_nights, hotel_check_in
 from app.modules.booking.ports import FlightSearchPort, HotelSearchPort
 from app.modules.budget.assessment import (
     ASSESSMENT_TTL_HOURS,
@@ -263,10 +263,9 @@ class BudgetAssessmentService:
         except Exception as exc:
             raise BudgetAssessmentUnavailable("Exchange-rate lookup failed.") from exc
 
-        nights = calculate_total_nights(trip.start_date, trip.end_date)
-
-        # Outbound, return and hotel searches are independent: run in parallel.
-        with ThreadPoolExecutor(max_workers=3 if nights else 2) as executor:
+        # Outbound and return run in parallel; the hotel starts once the
+        # cheapest outbound flight is known, from the night it lands.
+        with ThreadPoolExecutor(max_workers=2) as executor:
             outbound_future = executor.submit(
                 self._flights.search_flights,
                 origin=trip.origin,
@@ -283,20 +282,21 @@ class BudgetAssessmentService:
                 currency=destination_currency,
                 adults=trip.num_people,
             )
+            outbound = _cheapest(outbound_future, "outbound flight")
+            check_in = hotel_check_in(trip.start_date, trip.end_date, outbound)
             hotel_future = (
                 executor.submit(
                     self._hotels.search_hotels,
                     destination=f"{trip.destination_city.strip()}, {trip.destination.strip()}",
-                    check_in=trip.start_date,
+                    check_in=check_in,
                     check_out=trip.end_date,
                     currency=destination_currency,
                     adults=trip.num_people,
                 )
-                if nights
+                if calculate_total_nights(check_in, trip.end_date)
                 else None
             )
 
-            outbound = _cheapest(outbound_future, "outbound flight")
             return_flight = _cheapest(return_future, "return flight")
             hotel = _cheapest(hotel_future, "hotel") if hotel_future else {}
 

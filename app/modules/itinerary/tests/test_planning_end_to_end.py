@@ -6,6 +6,7 @@ generator, place search, geocoding and directions are faked.
 """
 
 import asyncio
+import copy
 import logging
 
 from app.modules.activities.models import PlaceIdea
@@ -14,6 +15,8 @@ from app.modules.booking.models import FlightAirport, FlightResult, HotelLocatio
 from app.modules.booking.service import BookingPlanningService
 from app.shared.observability import LogContext
 from app.modules.itinerary.service import PLANNING_MAX_ATTEMPTS, ItineraryPlanningService
+from app.modules.itinerary.validators import validate_itinerary_candidate
+from app.orchestration.planning_requirements import build_trip_requirements
 from app.modules.places.exceptions import PlaceSearchQuotaExhausted
 from app.modules.places.models import PlaceCandidate
 from app.modules.places.service import VerifiedPlaceSearch
@@ -326,6 +329,40 @@ class OvernightFlights(FakeFlights):
         return [_flight("TR805", "HND", "KUL", f"{departure_date} 02:15", 250.0, arrives=f"{departure_date} 18:15")]
 
 
+class LongJourneyFlights(FakeFlights):
+    """Found live: leaves 19:15 on day 1, lands 01:00 on day 3."""
+
+    def search_flights(self, *, origin, destination, departure_date, **kwargs):
+        self.calls += 1
+        if origin == "Malaysia":
+            return [_flight("TR469", "KUL", "HND", f"{departure_date} 19:15", 300.0, arrives="2026-11-03 01:00")]
+        return [_flight("R1", "HND", "KUL", f"{departure_date} 20:00", 250.0)]
+
+
+def test_a_long_journey_gets_no_hotel_before_landing_and_still_validates():
+    ideas = FakeIdeas(GOOD_IDEAS + [_idea("Ueno Park", 3, 2), _idea("Ichiran", 4, 1, "restaurant")])
+    world = World(ideas=ideas, flights=LongJourneyFlights())
+
+    update = world.run(state(end_date="2026-11-04"))
+
+    assert update["planning_outcome"] == "validated", update["planning_issue_codes"]
+    days = update["candidate_plan"]["itinerary"]
+    # Day 1 is in the air (no bed paid for); day 2's night is the bed on landing.
+    assert [day["hotel"] is not None for day in days] == [False, True, True, False]
+    assert [day["activities"] for day in days[:2]] == [[], []]
+    assert days[0]["day_total_cost"] == 300.0
+
+    # The validator itself refuses a paid night before landing.
+    padded = copy.deepcopy(days)
+    padded[0]["hotel"] = copy.deepcopy(days[1]["hotel"])
+    report = validate_itinerary_candidate(
+        build_trip_requirements(state(end_date="2026-11-04")),
+        padded,
+        update["candidate_plan"]["maps"],
+    )
+    assert "hotel.unexpected" in {issue.code for issue in report.issues}
+
+
 def test_travel_days_get_no_places_and_the_plan_still_validates():
     ideas = FakeIdeas(GOOD_IDEAS + [_idea("Ueno Park", 2, 2)])
     world = World(ideas=ideas, flights=OvernightFlights())
@@ -335,7 +372,8 @@ def test_travel_days_get_no_places_and_the_plan_still_validates():
     assert update["planning_outcome"] == "validated", update["planning_issue_codes"]
     days = update["candidate_plan"]["itinerary"]
     assert [day["activities"] for day in (days[0], days[2])] == [[], []]
-    assert [a["name"] for a in days[1]["activities"]] == ["Tokyo Tower", "Ueno Park"]
-    # Travel days were neither offered to the model nor "rescued".
+    assert [a["name"] for a in days[1]["activities"]][:2] == ["Tokyo Tower", "Ueno Park"]
+    # Travel days were neither offered to the model nor "rescued"; the one
+    # full day was topped up towards the minimum of 3.
     assert ideas.request.day_limits == (0, 8, 0)
-    assert ideas.rescue_calls == []
+    assert ideas.rescue_calls and all(call == (2,) for call in ideas.rescue_calls)
