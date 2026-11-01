@@ -41,11 +41,23 @@ _OFFICIAL_SUFFIX: Final = re.compile(
 # Thailand's embassies are on thaiembassy.org (listed by mfa.go.th).
 _OFFICIAL_HOSTS: Final = frozenset(
     {
-        "canada.ca",
-        "auswaertiges-amt.de",
-        "esteri.it",
-        "netherlandsworldwide.nl",
-        "thaiembassy.org",
+        "canada.ca",  # Canada
+        "auswaertiges-amt.de",  # Germany
+        "esteri.it",  # Italy
+        "netherlandsworldwide.nl",  # Netherlands
+        "thaiembassy.org",  # Thailand (embassies)
+        "irishimmigration.ie",  # Ireland
+        "migrationsverket.se",  # Sweden
+        "swedenabroad.se",  # Sweden (embassies)
+        "udi.no",  # Norway
+        "nyidanmark.dk",  # Denmark
+        "newtodenmark.dk",  # Denmark (same portal)
+        "um.dk",  # Denmark (foreign ministry and embassies)
+        "migri.fi",  # Finland
+        "um.fi",  # Finland (foreign ministry)
+        "finlandabroad.fi",  # Finland (embassies)
+        "kdmid.ru",  # Russia (consular department, e-visa)
+        "mid.ru",  # Russia (foreign ministry and embassies)
     }
 )
 

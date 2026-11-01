@@ -34,7 +34,7 @@ async def get_profile(
 ) -> ProfileResponse:
     # Per-user data: never cached by the browser or a shared proxy.
     response.headers["Cache-Control"] = "no-store, max-age=0"
-    response.headers["Vary"] = "X-User-ID"
+    response.headers["Vary"] = "Authorization"
 
     profile = await asyncio.to_thread(onboarding.get, user_id)
 

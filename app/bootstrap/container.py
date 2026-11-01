@@ -51,6 +51,8 @@ from app.infrastructure.currency.provider import (
 from app.infrastructure.destination.city_picker import (
     GeminiPrimaryCityPicker,
 )
+from app.infrastructure.auth.dev_identity import InsecureDevIdentityVerifier
+from app.infrastructure.auth.firebase_identity import FirebaseIdTokenVerifier
 from app.infrastructure.database.firebase import (
     FirestoreCacheStore,
 )
@@ -181,6 +183,7 @@ from app.orchestration.nodes import (
 from app.orchestration.session_access import SessionAccessService
 from app.orchestration.trip_intake import NewTripIntake
 from app.modules.places.pins import PlacePinLocator
+from app.modules.identity.ports import IdentityTokenVerifierPort
 from app.modules.profile.service import OnboardingService
 
 logger = logging.getLogger(__name__)
@@ -625,6 +628,23 @@ def _invalidate_cached_profile(user_id: str) -> None:
         get_profile_loader().invalidate(user_id)
 
 
+# ── Identity ────────────────────────────────────────────────────────
+
+
+@lru_cache(maxsize=1)
+def get_identity_verifier() -> IdentityTokenVerifierPort:
+    """Firebase ID-token checks, or the development stand-in when enabled."""
+
+    if _settings().AUTH_INSECURE_DEV_TOKENS:
+        logger.warning(
+            "AUTH_INSECURE_DEV_TOKENS is on: bearer tokens are trusted as user ids "
+            "without any check. Use it for local development only."
+        )
+        return InsecureDevIdentityVerifier()
+
+    return FirebaseIdTokenVerifier(credential_json=_settings().FIREBASE_CREDENTIAL_JSON)
+
+
 # ── New-trip intake ─────────────────────────────────────────────────
 
 
@@ -646,6 +666,8 @@ def init_resources() -> None:
     """Open storage and create schemas at application startup."""
 
     init_connection_pool(_settings().DATABASE_URL)
+    # Built now so a development-mode warning appears at start-up.
+    get_identity_verifier()
 
     get_user_profile_store().ensure_schema()
     get_travel_option_store().ensure_schema()

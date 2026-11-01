@@ -7,15 +7,16 @@ from fastapi.testclient import TestClient
 
 import app.main as main
 from app.api.errors import register_exception_handlers
-from app.api.providers import onboarding, place_pin_locator
+from app.api.providers import identity_verifier, onboarding, place_pin_locator
 from app.api.routers import geocode, profile
+from app.infrastructure.auth.dev_identity import InsecureDevIdentityVerifier
 from app.modules.places.exceptions import PlaceSearchUnavailable
 from app.modules.places.models import PlaceCandidate
 from app.modules.profile.exceptions import ProfileUnavailable
 from app.modules.profile.models import OnboardingProfile
 
 
-USER = {"X-User-ID": "user-1"}
+USER = {"Authorization": "Bearer user-1"}
 ANA = OnboardingProfile(name="Ana", home_country="Malaysia", home_state="Selangor")
 
 
@@ -55,6 +56,7 @@ def client(*, onboarding_service=None, locator=None):
     api.include_router(geocode.router, prefix="/api/geocode")
     api.dependency_overrides[onboarding] = lambda: onboarding_service or Onboarding()
     api.dependency_overrides[place_pin_locator] = lambda: locator or Locator(None)
+    api.dependency_overrides[identity_verifier] = InsecureDevIdentityVerifier
     return TestClient(api, raise_server_exceptions=False)
 
 
@@ -160,8 +162,9 @@ def test_liveness_and_readiness_probes(monkeypatch):
     assert not_ready.status_code == 503 and not_ready.json()["checks"]["checkpoints"] is False
 
 
-def test_the_assembled_app_maps_errors():
+def test_the_assembled_app_maps_errors(monkeypatch):
     # A route that needs the graph before startup finished: 503, not a crash.
+    monkeypatch.setitem(main.app.dependency_overrides, identity_verifier, InsecureDevIdentityVerifier)
     api = TestClient(main.app, raise_server_exceptions=False)
 
     response = api.post("/api/chat/message", json={"session_id": "s", "user_message": "hi"}, headers=USER)

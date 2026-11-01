@@ -199,6 +199,17 @@ def test_mixed_request_goes_to_agent_only_after_approved_evidence():
         ("https://www.canada.ca/en/immigration", SourceAuthority.OFFICIAL),
         ("https://www.thaiembassy.com/thailand-visa", SourceAuthority.SECONDARY),
         ("https://thaiembassy.org.example.com/", SourceAuthority.SECONDARY),
+        ("https://www.irishimmigration.ie/visas", SourceAuthority.OFFICIAL),
+        ("https://www.migrationsverket.se/English", SourceAuthority.OFFICIAL),
+        ("https://www.udi.no/en/", SourceAuthority.OFFICIAL),
+        ("https://www.nyidanmark.dk/en-GB", SourceAuthority.OFFICIAL),
+        ("https://um.dk/thailand/en/travel-and-residence/", SourceAuthority.OFFICIAL),
+        ("https://migri.fi/en/home", SourceAuthority.OFFICIAL),
+        ("https://finlandabroad.fi/web/irl/mission", SourceAuthority.OFFICIAL),
+        ("https://evisa.kdmid.ru/", SourceAuthority.OFFICIAL),
+        ("https://washington.mid.ru/en/", SourceAuthority.OFFICIAL),
+        ("https://fakeudi.no/", SourceAuthority.SECONDARY),
+        ("https://russia-evisa-kdmid.ru.com/", SourceAuthority.SECONDARY),
     ],
 )
 def test_source_authority(url, authority):

@@ -7,22 +7,19 @@
  *   • POST /api/form/submit    → bootstrap a new trip from a structured form
  *   • POST /api/chat/message   → continue a conversation on an existing session
  *
- * Every request injects the `X-User-ID` header the backend expects
- * (see app/api/dependencies.py::verify_user_token). Auth is deferred to v2;
- * for now this is a stable per-device id.
+ * Every request sends the signed-in user's Firebase ID token as
+ * `Authorization: Bearer …` (see app/api/dependencies.py::verify_user_token).
+ * The token comes from the provider registered with `setAuthTokenProvider`,
+ * so this client never imports Firebase.
  *
  * Config comes from Vite env vars (see .env.local):
  *   • VITE_API_BASE_URL  — e.g. http://localhost:8000
- *   • VITE_USER_ID       — a stable user id sent as X-User-ID
  *   • VITE_MAPBOX_TOKEN  — (optional) public Mapbox token for static day maps
  */
 
 const API_BASE_URL: string =
   (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '') ??
   'http://localhost:8000';
-
-const USER_ID: string =
-  (import.meta.env.VITE_USER_ID as string | undefined) ?? 'test-user-001';
 
 export const MAPBOX_TOKEN: string =
   (import.meta.env.VITE_MAPBOX_TOKEN as string | undefined) ?? '';
@@ -642,33 +639,80 @@ async function fetchWithTimeout(
   }
 }
 
+// ── Sign-in token ───────────────────────────────────────────────────
+
+/** Supplies the signed-in user's ID token; registered by the sign-in gate. */
+export interface AuthTokenProvider {
+  /** The token, or null when nobody is signed in. `forceRefresh` asks for a new one. */
+  getToken(forceRefresh: boolean): Promise<string | null>;
+  /** The backend refused even a fresh token: the sign-in is no longer valid. */
+  onRejected(): void;
+}
+
+let authTokenProvider: AuthTokenProvider | null = null;
+
+export function setAuthTokenProvider(provider: AuthTokenProvider | null): void {
+  authTokenProvider = provider;
+}
+
+async function authorizationHeader(forceRefresh: boolean): Promise<Record<string, string>> {
+  let token: string | null = null;
+  try {
+    token = authTokenProvider ? await authTokenProvider.getToken(forceRefresh) : null;
+  } catch (error) {
+    throw new ApiError(0, error, 'Could not refresh your sign-in. Check your connection and try again.');
+  }
+  if (!token) {
+    throw new ApiError(401, null, 'Please sign in to continue.');
+  }
+  return { Authorization: `Bearer ${token}` };
+}
+
+/**
+ * Sends a request with the user's token. A 401 is retried once with a
+ * refreshed token, because the cached one may have just expired. The retry is
+ * safe for POSTs too: the backend refuses a bad token before the route runs.
+ */
+async function sendAuthorized(
+  path: string,
+  init: (auth: Record<string, string>) => RequestInit,
+  timeoutMs: number,
+): Promise<Response> {
+  const res = await fetchWithTimeout(path, init(await authorizationHeader(false)), timeoutMs);
+  if (res.status !== 401) return res;
+
+  const retried = await fetchWithTimeout(path, init(await authorizationHeader(true)), timeoutMs);
+  if (retried.status === 401) authTokenProvider?.onRejected();
+  return retried;
+}
+
 async function post(
   path: string,
   body: unknown,
   timeoutMs: number = DEFAULT_TIMEOUT_MS,
 ): Promise<unknown> {
-  const res = await fetchWithTimeout(
+  const res = await sendAuthorized(
     path,
-    {
+    (auth) => ({
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-User-ID': USER_ID },
+      headers: { 'Content-Type': 'application/json', ...auth },
       body: JSON.stringify(body),
-    },
+    }),
     timeoutMs,
   );
   return parseResponse(res, path);
 }
 
 async function get(path: string, timeoutMs: number = DEFAULT_TIMEOUT_MS): Promise<unknown> {
-  const res = await fetchWithTimeout(
+  const res = await sendAuthorized(
     path,
-    {
+    (auth) => ({
       method: 'GET',
-      headers: { 'X-User-ID': USER_ID },
+      headers: auth,
       // Profile and checkpoint history are mutable server state. Revalidation
       // must reach the backend so a database reset is reflected immediately.
       cache: 'no-store',
-    },
+    }),
     timeoutMs,
   );
   return parseResponse(res, path);
@@ -1637,4 +1681,4 @@ export function newSessionId(): string {
   return `sess-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-export const apiConfig = { baseUrl: API_BASE_URL, userId: USER_ID, hasMapbox: !!MAPBOX_TOKEN };
+export const apiConfig = { baseUrl: API_BASE_URL, hasMapbox: !!MAPBOX_TOKEN };

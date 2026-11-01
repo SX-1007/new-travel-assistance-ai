@@ -14,6 +14,7 @@ from fastapi import Depends
 
 from app.api.errors import ServiceNotReady
 from app.bootstrap import container
+from app.modules.identity.ports import IdentityTokenVerifierPort
 from app.modules.output_review.service import OutputReviewService
 from app.modules.places.pins import PlacePinLocator
 from app.modules.profile.service import OnboardingService
@@ -32,6 +33,10 @@ def graph_runtime() -> GraphRuntime:
         return container.get_graph_runtime()
     except RuntimeError as exc:
         raise ServiceNotReady from exc
+
+
+def identity_verifier() -> IdentityTokenVerifierPort:
+    return container.get_identity_verifier()
 
 
 def new_trip_intake() -> NewTripIntake:

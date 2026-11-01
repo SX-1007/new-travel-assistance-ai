@@ -72,7 +72,7 @@ async def get_chat_history(
 ) -> ChatHistoryResponse:
     # Per-user data: never cached by the browser or a shared proxy.
     response.headers["Cache-Control"] = "no-store, max-age=0"
-    response.headers["Vary"] = "X-User-ID"
+    response.headers["Vary"] = "Authorization"
 
     sessions = await asyncio.to_thread(_load_sessions, load, reviewer, user_id, limit)
     return ChatHistoryResponse(sessions=sessions)

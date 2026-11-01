@@ -1632,6 +1632,9 @@ describe('App end-to-end component flows', () => {
     const actualApi = await vi.importActual<typeof import('../src/lib/api')>(
       '../src/lib/api',
     );
+    // The real client sends a bearer token; the sign-in gate is not rendered here.
+    actualApi.setAuthTokenProvider({ getToken: async () => 'token-1', onRejected: () => undefined });
+    onTestFinished(() => actualApi.setAuthTokenProvider(null));
     apiMocks.getProfile.mockResolvedValue({ status: 'success', onboarded: true, profile: {} });
     apiMocks.getChatHistory.mockResolvedValue({
       status: 'success',

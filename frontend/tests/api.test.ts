@@ -1,11 +1,15 @@
 import type { TripFormRequest } from '../src/lib/api';
 
-async function loadApi(baseUrl = 'http://api.test/', userId = 'user-123') {
+const AUTH = { Authorization: 'Bearer token-123' };
+
+/** A fresh client signed in as a user whose ID token is `token-123`. */
+async function loadApi(baseUrl = 'http://api.test/') {
   vi.resetModules();
   vi.stubEnv('VITE_API_BASE_URL', baseUrl);
-  vi.stubEnv('VITE_USER_ID', userId);
   vi.stubEnv('VITE_MAPBOX_TOKEN', 'pk.test');
-  return import('../src/lib/api');
+  const api = await import('../src/lib/api');
+  api.setAuthTokenProvider({ getToken: async () => 'token-123', onRejected: () => undefined });
+  return api;
 }
 
 
@@ -21,10 +25,9 @@ describe('frontend API client', () => {
   });
 
   it('normalizes configuration and exposes non-secret diagnostics', async () => {
-    const api = await loadApi('http://api.test///', 'device-1');
+    const api = await loadApi('http://api.test///');
     expect(api.apiConfig).toEqual({
       baseUrl: 'http://api.test//',
-      userId: 'device-1',
       hasMapbox: true,
     });
   });
@@ -60,7 +63,7 @@ describe('frontend API client', () => {
     expect(init.method).toBe('POST');
     expect(init.headers).toEqual({
       'Content-Type': 'application/json',
-      'X-User-ID': 'user-123',
+      Authorization: 'Bearer token-123',
     });
     expect(JSON.parse(String(init.body))).toEqual({
       name: 'Alex',
@@ -82,7 +85,7 @@ describe('frontend API client', () => {
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe('http://api.test/api/profile/');
     expect(init.method).toBe('GET');
-    expect(init.headers).toEqual({ 'X-User-ID': 'user-123' });
+    expect(init.headers).toEqual(AUTH);
     expect(init.cache).toBe('no-store');
   });
 
@@ -103,7 +106,7 @@ describe('frontend API client', () => {
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe('http://api.test/api/chat/history?limit=5');
     expect(init.method).toBe('GET');
-    expect(init.headers).toEqual({ 'X-User-ID': 'user-123' });
+    expect(init.headers).toEqual(AUTH);
     expect(init.cache).toBe('no-store');
   });
 
@@ -1049,5 +1052,80 @@ describe('frontend API client', () => {
     vi.spyOn(Math, 'random').mockReturnValue(0.5);
     const api = await loadApi();
     expect(api.newSessionId()).toBe('sess-123456-8');
+  });
+});
+
+
+describe('sign-in token on API requests', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
+  const ok = () => new Response(JSON.stringify({ status: 'success', onboarded: true, profile: {} }), { status: 200 });
+  const unauthorized = () => new Response(JSON.stringify({ detail: 'Your sign-in has expired.' }), { status: 401 });
+
+  async function clientWith(provider: { getToken: (force: boolean) => Promise<string | null>; onRejected: () => void } | null) {
+    vi.resetModules();
+    vi.stubEnv('VITE_API_BASE_URL', 'http://api.test');
+    const api = await import('../src/lib/api');
+    api.setAuthTokenProvider(provider);
+    return api;
+  }
+
+  it('retries a 401 once with a refreshed token', async () => {
+    const getToken = vi.fn(async (force: boolean) => (force ? 'fresh' : 'stale'));
+    const onRejected = vi.fn();
+    const fetchMock = vi.fn().mockResolvedValueOnce(unauthorized()).mockResolvedValueOnce(ok());
+    vi.stubGlobal('fetch', fetchMock);
+    const api = await clientWith({ getToken, onRejected });
+
+    await expect(api.getProfile()).resolves.toMatchObject({ onboarded: true });
+
+    expect(getToken.mock.calls).toEqual([[false], [true]]);
+    const headers = fetchMock.mock.calls.map(([, init]) => (init as RequestInit).headers);
+    expect(headers).toEqual([{ Authorization: 'Bearer stale' }, { Authorization: 'Bearer fresh' }]);
+    expect(onRejected).not.toHaveBeenCalled();
+  });
+
+  it('reports a rejected sign-in when even a fresh token is refused', async () => {
+    const onRejected = vi.fn();
+    const fetchMock = vi.fn().mockResolvedValueOnce(unauthorized()).mockResolvedValueOnce(unauthorized());
+    vi.stubGlobal('fetch', fetchMock);
+    const api = await clientWith({ getToken: async () => 'token', onRejected });
+
+    await expect(api.submitProfile({ name: 'A', origin_country: 'Malaysia', origin_state: 'Selangor' }))
+      .rejects.toMatchObject({ status: 401 });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(onRejected).toHaveBeenCalledOnce();
+  });
+
+  it('never calls the backend without a signed-in user', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const signedOut = await clientWith({ getToken: async () => null, onRejected: () => undefined });
+    await expect(signedOut.getProfile()).rejects.toMatchObject({ status: 401, message: 'Please sign in to continue.' });
+
+    const noProvider = await clientWith(null);
+    await expect(noProvider.getChatHistory()).rejects.toMatchObject({ status: 401 });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('turns a failed token refresh into a connection error', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const api = await clientWith({
+      getToken: async () => { throw new Error('auth/network-request-failed'); },
+      onRejected: () => undefined,
+    });
+
+    await expect(api.getProfile()).rejects.toMatchObject({
+      status: 0,
+      message: 'Could not refresh your sign-in. Check your connection and try again.',
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

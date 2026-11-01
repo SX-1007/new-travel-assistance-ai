@@ -11,8 +11,9 @@ from fastapi.testclient import TestClient
 from google.api_core import exceptions as google_errors
 
 from app.api.errors import ServiceNotReady, error_response_for, register_exception_handlers
-from app.api.providers import chat_history_loader, graph_runtime, new_trip_intake, output_review
+from app.api.providers import chat_history_loader, graph_runtime, identity_verifier, new_trip_intake, output_review
 from app.api.routers import chat, form
+from app.infrastructure.auth.dev_identity import InsecureDevIdentityVerifier
 from app.modules.budget.models import BudgetAssessment, BudgetAssessmentResult
 from app.modules.destination.exceptions import DestinationResolutionUnavailable
 from app.modules.destination.models import ResolvedDestination
@@ -25,7 +26,9 @@ from app.orchestration.trip_intake import NewTripIntake
 from app.shared.exceptions import InvalidTurnRequest, SessionBusy
 
 
-USER = {"X-User-ID": "user-1"}
+# The development verifier takes the bearer token as the user id; the
+# Firebase check itself is tested in app/infrastructure/auth/tests.
+USER = {"Authorization": "Bearer user-1"}
 FORM = {
     "country": "Japan",
     "city": ["Tokyo"],
@@ -94,6 +97,7 @@ class World:
         api.dependency_overrides[new_trip_intake] = lambda: self.intake
         api.dependency_overrides[output_review] = lambda: self.reviewer
         api.dependency_overrides[chat_history_loader] = lambda: self.load_history
+        api.dependency_overrides[identity_verifier] = InsecureDevIdentityVerifier
         self.client = TestClient(api, raise_server_exceptions=False)
 
     def load_history(self, user_id, limit):
@@ -260,7 +264,7 @@ def test_a_failed_change_keeps_the_graphs_own_explanation():
 def test_chat_errors_map_to_statuses():
     world, session = planned_world()
 
-    assert world.say(session, "hi", headers={"X-User-ID": "someone-else"}).status_code == 404
+    assert world.say(session, "hi", headers={"Authorization": "Bearer someone-else"}).status_code == 404
     assert world.say("no-such-trip", "hi").status_code == 404
     assert world.say("x" * 129, "hi").status_code == 422
     assert world.say(session, "hi", headers={}).status_code == 401

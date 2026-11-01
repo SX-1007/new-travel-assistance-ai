@@ -32,6 +32,7 @@ from langgraph.errors import GraphRecursionError
 from psycopg_pool import PoolTimeout
 
 from app.modules.budget.exceptions import CurrencyProviderError
+from app.modules.identity.exceptions import IdentityVerificationUnavailable
 from app.modules.profile.exceptions import ProfileUnavailable
 from app.shared.exceptions import (
     InvalidTurnRequest,
@@ -91,6 +92,11 @@ ERROR_RESPONSES: Final[Mapping[type[BaseException], ErrorResponse]] = {
     ServiceNotReady: ErrorResponse(
         status.HTTP_503_SERVICE_UNAVAILABLE,
         "The service is starting up. Please retry shortly.",
+        retry_after_seconds=5,
+    ),
+    IdentityVerificationUnavailable: ErrorResponse(
+        status.HTTP_503_SERVICE_UNAVAILABLE,
+        "Sign-in could not be checked right now. Please retry shortly.",
         retry_after_seconds=5,
     ),
     # ── Turn limits ──

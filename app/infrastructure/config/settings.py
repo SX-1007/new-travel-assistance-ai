@@ -73,6 +73,13 @@ class Settings(BaseSettings):
         ..., min_length=1, description="Path to JSON file or raw JSON string"
     )
 
+    # ── Sign-in ──────────────────────────────────────────────────────
+    # Users sign in with Firebase Authentication (same project as the
+    # credential above). Development only: true accepts "Bearer <user id>"
+    # with no check, so anyone can act as any user. Never set it on a
+    # server others can reach.
+    AUTH_INSECURE_DEV_TOKENS: bool = False
+
     # ── External APIs ────────────────────────────────────────────────
     MAPBOX_TOKEN: str = Field(..., min_length=1)
     SERPAPI_FLIGHT: str = Field(..., min_length=1)

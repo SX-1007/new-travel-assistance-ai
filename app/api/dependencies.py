@@ -1,8 +1,10 @@
 """FastAPI request-scoped dependencies.
 
 This module contains HTTP-layer concerns only: authentication context and
-request correlation IDs. Infrastructure clients and orchestration internals
-must not be exposed from here.
+request correlation IDs. The token check itself sits behind
+``IdentityTokenVerifierPort``, supplied by ``providers.identity_verifier``.
+Infrastructure clients and orchestration internals must not be exposed from
+here.
 """
 
 from __future__ import annotations
@@ -18,66 +20,56 @@ from fastapi import (
     status,
 )
 
+from app.api.providers import identity_verifier
+from app.modules.identity.exceptions import InvalidIdentityToken
+from app.modules.identity.ports import IdentityTokenVerifierPort
 
-# Other header names that clients may send the user id in.
-_USER_ID_FALLBACK_HEADERS: tuple[str, ...] = (
-    "x-uid",
-    "x-auth-user-id",
-)
 
-_USER_ID_MIN_LEN = 1
-_USER_ID_MAX_LEN = 128
+# A Firebase ID token is about 1 KB; anything far larger is refused unread.
+_TOKEN_MAX_LEN = 4096
+_BEARER_PREFIX = "bearer "
 
 _REQUEST_STATE_ATTR = "request_id"
 _REQUEST_ID_MAX_LEN = 128
 
 
-async def verify_user_token(
-    request: Request,
-    x_user_id: Annotated[
-        str | None,
-        Header(alias="X-User-ID"),
-    ] = None,
+def _unauthorized(detail: str, *, invalid_token: bool) -> HTTPException:
+    challenge = 'Bearer error="invalid_token"' if invalid_token else "Bearer"
+    return HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail=detail,
+        headers={"WWW-Authenticate": challenge},
+    )
+
+
+def verify_user_token(
+    verifier: Annotated[IdentityTokenVerifierPort, Depends(identity_verifier)],
+    authorization: Annotated[str | None, Header()] = None,
 ) -> str:
-    """Return the caller's user ID from the request headers.
+    """The user id proven by the request's ``Authorization: Bearer`` token.
 
-    The header is trusted as sent: there is no token check yet, so any client
-    can act as any user (known issue B1). Routes depend only on
-    ``CurrentUser``, so a real token check can replace this function without
-    changing them.
+    Sync on purpose: FastAPI runs it in a worker thread, because the first
+    check fetches Google's signing keys. A missing, malformed or rejected
+    token is a 401; a check that couldn't run is a 503 (see ``errors.py``).
     """
-    user_id = x_user_id
 
-    if not user_id:
-        for alias in _USER_ID_FALLBACK_HEADERS:
-            candidate = request.headers.get(alias)
+    header = (authorization or "").strip()
 
-            if candidate:
-                user_id = candidate
-                break
+    if not header:
+        raise _unauthorized("Sign-in required.", invalid_token=False)
 
-    if not user_id:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Unauthorized: Missing X-User-ID header.",
-            headers={
-                "WWW-Authenticate": "Bearer",
-            },
-        )
+    if not header.lower().startswith(_BEARER_PREFIX):
+        raise _unauthorized("Use an Authorization: Bearer token.", invalid_token=True)
 
-    user_id = user_id.strip()
+    token = header[len(_BEARER_PREFIX):].strip()
 
-    if not (
-        _USER_ID_MIN_LEN
-        <= len(user_id)
-        <= _USER_ID_MAX_LEN
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Unauthorized: Invalid user identifier format.",
-        )
+    if not token or len(token) > _TOKEN_MAX_LEN:
+        raise _unauthorized("The sign-in token is malformed.", invalid_token=True)
 
-    return user_id
+    try:
+        return verifier.verify(token)
+    except InvalidIdentityToken as exc:
+        raise _unauthorized("Your sign-in has expired or is invalid. Please sign in again.", invalid_token=True) from exc
 
 
 CurrentUser = Annotated[

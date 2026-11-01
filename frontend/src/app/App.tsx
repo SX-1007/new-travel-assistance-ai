@@ -3,8 +3,9 @@ import {
   Plane, Map, Calendar, Compass, MessageSquare, Menu, Settings,
   User, Paperclip, Send, MapPin, Plus, History, Sunrise, ChevronRight, X,
   ShieldAlert, Phone, Building, Loader2, AlertTriangle,
-  Globe, Users, DollarSign, Search, Home
+  Globe, Users, DollarSign, Search, Home, LogOut
 } from 'lucide-react';
+import { useAuth } from './components/AuthGate';
 import {
   sendChatMessage, submitTripForm, submitProfile, getProfile,
   getChatHistory, newSessionId, ApiError,
@@ -694,6 +695,7 @@ const NewTripForm = ({
 // Captured once and persisted to the backend (POST /api/profile) BEFORE any
 // trip planning. The trip form then no longer asks for the user's origin.
 const OnboardingScreen = ({ onComplete }: { onComplete: (homeCountry: string) => void }) => {
+  const auth = useAuth();
   const [name, setName] = useState('');
   const [originCountry, setOriginCountry] = useState('');
   const [originState, setOriginState] = useState('');
@@ -775,12 +777,22 @@ const OnboardingScreen = ({ onComplete }: { onComplete: (homeCountry: string) =>
             {busy ? (<><Loader2 size={18} className="animate-spin" /> Saving…</>) : (<>Continue <ChevronRight size={18} /></>)}
           </button>
         </form>
+
+        {auth && (
+          <p className="mt-4 text-center text-sm text-slate-500">
+            Signed in as {auth.user.email || auth.user.displayName}.{' '}
+            <button type="button" onClick={auth.signOut} className="font-medium text-blue-600 hover:underline">
+              Not you? Sign out
+            </button>
+          </p>
+        )}
       </div>
     </div>
   );
 };
 
 export default function App() {
+  const auth = useAuth();
   const [messages, setMessages] = useState<any[]>(INITIAL_MESSAGES);
   const [input, setInput] = useState('');
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -1519,6 +1531,19 @@ const [historyLoaded, setHistoryLoaded] = useState(false);
             <div className="text-xs font-medium px-2.5 py-1.5 bg-blue-50 text-blue-600 rounded-full border border-blue-100 hidden md:block">
               Wander-Pro Model
             </div>
+
+            {auth && (
+              <button
+                type="button"
+                onClick={auth.signOut}
+                title={auth.user.email ? `Signed in as ${auth.user.email}` : undefined}
+                aria-label="Sign out"
+                className="flex items-center gap-1.5 rounded-full border border-slate-200 px-3 py-1.5 text-sm font-semibold text-slate-600 transition-colors hover:bg-slate-50"
+              >
+                <LogOut size={16} />
+                <span className="hidden sm:inline">Sign out</span>
+              </button>
+            )}
           </div>
         </header>
 
