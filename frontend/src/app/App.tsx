@@ -69,6 +69,12 @@ const latestActionableAssessment = (
 const LEGACY_SESSIONS_PREFIX = 'wander_sessions_';
 const MAX_STORED_SESSIONS = 10;
 
+/**
+ * Minimum gap between focus/visibility-triggered profile + history checks,
+ * measured from mount (the initial hydration counts as the first check).
+ */
+export const FOCUS_REVALIDATION_COOLDOWN_MS = 60_000;
+
 /** Remove chat copies written by releases that predate server-authoritative history. */
 const clearLegacyStoredSessions = (): void => {
   try {
@@ -949,8 +955,6 @@ const [historyLoaded, setHistoryLoaded] = useState(false);
     // initial /api/profile and /api/chat/history requests.
     let lastRevalidationAt = Date.now();
 
-    const REVALIDATE_COOLDOWN_MS = 60_000;
-
     const revalidate = () => {
       // Initial profile/history hydration is already retrieving the latest
       // server state. Do not launch a duplicate request during that process.
@@ -962,7 +966,7 @@ const [historyLoaded, setHistoryLoaded] = useState(false);
 
       // Switching briefly between the browser, VS Code and terminal should not
       // reload the complete persisted conversation history every time.
-      if (now - lastRevalidationAt < REVALIDATE_COOLDOWN_MS) {
+      if (now - lastRevalidationAt < FOCUS_REVALIDATION_COOLDOWN_MS) {
         return;
       }
 

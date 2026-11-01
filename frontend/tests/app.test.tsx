@@ -125,9 +125,18 @@ vi.mock('../src/lib/mapStatic', () => ({
   buildStaticMapUrl: vi.fn(() => null),
 }));
 
-import App from '../src/app/App';
+import App, { FOCUS_REVALIDATION_COOLDOWN_MS } from '../src/app/App';
 import { findLatestItinerarySnapshot } from '../src/app/components/ItineraryCanvas';
 
+// The placeholder carries a "leave blank" hint after the example; match only the stable start.
+const destinationCityInput = () => screen.getByPlaceholderText(/^e\.g\. Kyoto, Osaka/);
+
+// Focus checks are throttled from mount. Move the clock past the window so the
+// next focus event counts as a real return to the tab.
+const passFocusRevalidationCooldown = () => {
+  const later = Date.now() + FOCUS_REVALIDATION_COOLDOWN_MS;
+  vi.spyOn(Date, 'now').mockReturnValue(later);
+};
 
 describe('App end-to-end component flows', () => {
   afterEach(() => {
@@ -640,12 +649,30 @@ describe('App end-to-end component flows', () => {
     expect(await screen.findByText('persisted plan')).toBeInTheDocument();
 
     apiMocks.getProfile.mockResolvedValue({ status: 'success', onboarded: false, profile: {} });
+    passFocusRevalidationCooldown();
     fireEvent.focus(window);
 
     expect(await screen.findByText('Welcome to Wander AI')).toBeInTheDocument();
     expect(screen.queryByText('China')).not.toBeInTheDocument();
     expect(screen.queryByText('persisted plan')).not.toBeInTheDocument();
-    expect(apiMocks.getProfile).toHaveBeenCalledTimes(2);
+    // One read for the initial check, then two for the reset: a missing profile is re-read before onboarding.
+    expect(apiMocks.getProfile).toHaveBeenCalledTimes(3);
+  });
+
+  it('ignores focus events within the revalidation cooldown', async () => {
+    apiMocks.getProfile.mockResolvedValue({
+      status: 'success',
+      onboarded: true,
+      profile: { name: 'Alex', home_country: 'Malaysia', home_state: 'Selangor' },
+    });
+    render(<App />);
+    expect(await screen.findByText('Where to next?')).toBeInTheDocument();
+
+    fireEvent.focus(window);
+    fireEvent(document, new Event('visibilitychange'));
+
+    expect(apiMocks.getProfile).toHaveBeenCalledTimes(1);
+    expect(apiMocks.getChatHistory).toHaveBeenCalledTimes(1);
   });
 
   it('hydrates history normally after re-onboarding from an external profile reset', async () => {
@@ -655,7 +682,8 @@ describe('App end-to-end component flows', () => {
         onboarded: true,
         profile: { name: 'Alex', home_country: 'Malaysia', home_state: 'Selangor' },
       })
-      .mockResolvedValueOnce({ status: 'success', onboarded: false, profile: {} });
+      // The gate re-reads a missing profile before showing onboarding.
+      .mockResolvedValue({ status: 'success', onboarded: false, profile: {} });
     apiMocks.getChatHistory
       .mockResolvedValueOnce({
         status: 'success',
@@ -672,6 +700,7 @@ describe('App end-to-end component flows', () => {
     render(<App />);
     expect(await screen.findByText('Old saved plan')).toBeInTheDocument();
 
+    passFocusRevalidationCooldown();
     fireEvent.focus(window);
     expect(await screen.findByText('Welcome to Wander AI')).toBeInTheDocument();
     fireEvent.change(screen.getByPlaceholderText('e.g. Alex Tan'), {
@@ -709,6 +738,7 @@ describe('App end-to-end component flows', () => {
     expect(await screen.findByText('visible plan')).toBeInTheDocument();
 
     apiMocks.getProfile.mockReturnValue(new Promise(() => undefined));
+    passFocusRevalidationCooldown();
     fireEvent.focus(window);
 
     expect(screen.getByText('visible plan')).toBeInTheDocument();
@@ -738,6 +768,7 @@ describe('App end-to-end component flows', () => {
     render(<App />);
     expect(await screen.findByText('Saved Japan plan')).toBeInTheDocument();
 
+    passFocusRevalidationCooldown();
     fireEvent.focus(window);
     await waitFor(() => expect(apiMocks.getChatHistory).toHaveBeenCalledTimes(2));
     fireEvent.click(screen.getByRole('button', { name: 'New Trip' }));
@@ -789,6 +820,7 @@ describe('App end-to-end component flows', () => {
       target: { value: 'New Zealand' },
     });
 
+    passFocusRevalidationCooldown();
     fireEvent.focus(window);
     await waitFor(() => expect(apiMocks.getChatHistory).toHaveBeenCalledTimes(2));
     await act(async () => {
@@ -810,8 +842,38 @@ describe('App end-to-end component flows', () => {
 
     fireEvent.change(screen.getByPlaceholderText('e.g. Japan'), { target: { value: 'Japan' } });
     fireEvent.click(screen.getByRole('button', { name: /Generate itinerary/ }));
-    expect(screen.getByText('Please enter at least one destination state or city.')).toBeInTheDocument();
+    expect(screen.getByText('Please pick your travel dates.')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Start date'), { target: { value: '2026-08-05' } });
+    fireEvent.change(screen.getByLabelText('End date'), { target: { value: '2026-08-01' } });
+    fireEvent.click(screen.getByRole('button', { name: /Generate itinerary/ }));
+    expect(screen.getByText('The end date must be on or after the start date.')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('End date'), { target: { value: '2026-08-05' } });
+    fireEvent.click(screen.getByRole('button', { name: /Generate itinerary/ }));
+    expect(screen.getByText('Please enter a total budget greater than 0.')).toBeInTheDocument();
     expect(apiMocks.submitTripForm).not.toHaveBeenCalled();
+  });
+
+  it('lets the backend choose the city when the destination city is left blank', async () => {
+    apiMocks.getProfile.mockResolvedValue({ status: 'success', onboarded: true, profile: {} });
+    apiMocks.submitTripForm.mockReturnValue(new Promise(() => undefined));
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'New Trip' }));
+    fireEvent.change(screen.getByPlaceholderText('e.g. Japan'), { target: { value: 'Japan' } });
+    fireEvent.change(screen.getByLabelText('Start date'), { target: { value: '2026-08-01' } });
+    fireEvent.change(screen.getByLabelText('End date'), { target: { value: '2026-08-05' } });
+    fireEvent.change(screen.getByPlaceholderText('e.g. 3000'), { target: { value: '5000' } });
+    fireEvent.click(screen.getByRole('button', { name: /Generate itinerary/ }));
+
+    await waitFor(() => expect(apiMocks.submitTripForm).toHaveBeenCalledWith({
+      country: 'Japan',
+      city: [],
+      num_people: 1,
+      total_budget: 5000,
+      start_date: '2026-08-01',
+      end_date: '2026-08-05',
+    }));
   });
 
   it('never renders raw response JSON controls for a successful plan', async () => {
@@ -823,6 +885,7 @@ describe('App end-to-end component flows', () => {
       itinerary: plan.itinerary,
       daily_geojson_maps: plan.maps,
       destination_country_code: plan.destination_country_code,
+      resolved_cities: ['Tokyo'],
       total_budget: plan.budget.total,
       currency: plan.budget.currency,
       budget_allocation: plan.budget.allocation,
@@ -832,7 +895,7 @@ describe('App end-to-end component flows', () => {
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: 'New Trip' }));
     fireEvent.change(screen.getByPlaceholderText('e.g. Japan'), { target: { value: 'Japan' } });
-    fireEvent.change(screen.getByPlaceholderText('e.g. Kyoto, Osaka'), { target: { value: 'Tokyo' } });
+    fireEvent.change(destinationCityInput(), { target: { value: 'Tokyo' } });
     fireEvent.change(screen.getByLabelText('Start date'), { target: { value: '2026-08-01' } });
     fireEvent.change(screen.getByLabelText('End date'), { target: { value: '2026-08-05' } });
     fireEvent.change(screen.getByPlaceholderText('e.g. 3000'), { target: { value: '5000' } });
@@ -853,6 +916,7 @@ describe('App end-to-end component flows', () => {
       itinerary: plan.itinerary,
       daily_geojson_maps: plan.maps,
       destination_country_code: plan.destination_country_code,
+      resolved_cities: ['Tokyo'],
       total_budget: plan.budget.total,
       currency: plan.budget.currency,
       budget_allocation: plan.budget.allocation,
@@ -862,7 +926,7 @@ describe('App end-to-end component flows', () => {
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: 'New Trip' }));
     fireEvent.change(screen.getByPlaceholderText('e.g. Japan'), { target: { value: 'Japan' } });
-    fireEvent.change(screen.getByPlaceholderText('e.g. Kyoto, Osaka'), { target: { value: 'Tokyo' } });
+    fireEvent.change(destinationCityInput(), { target: { value: 'Tokyo' } });
     fireEvent.change(screen.getByLabelText('Start date'), { target: { value: '2026-08-01' } });
     fireEvent.change(screen.getByLabelText('End date'), { target: { value: '2026-08-05' } });
     fireEvent.change(screen.getByPlaceholderText('e.g. 3000'), { target: { value: '5000' } });
@@ -894,6 +958,7 @@ describe('App end-to-end component flows', () => {
         itinerary: plan.itinerary,
         daily_geojson_maps: plan.maps,
         destination_country_code: plan.destination_country_code,
+        resolved_cities: ['Tokyo'],
         total_budget: plan.budget.total,
         currency: plan.budget.currency,
         budget_allocation: plan.budget.allocation,
@@ -903,7 +968,7 @@ describe('App end-to-end component flows', () => {
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: 'New Trip' }));
     fireEvent.change(screen.getByPlaceholderText('e.g. Japan'), { target: { value: 'Japan' } });
-    fireEvent.change(screen.getByPlaceholderText('e.g. Kyoto, Osaka'), { target: { value: 'Tokyo' } });
+    fireEvent.change(destinationCityInput(), { target: { value: 'Tokyo' } });
     fireEvent.change(screen.getByLabelText('Start date'), { target: { value: '2026-08-01' } });
     fireEvent.change(screen.getByLabelText('End date'), { target: { value: '2026-08-05' } });
     fireEvent.change(screen.getByPlaceholderText('e.g. 3000'), { target: { value: '5000' } });
@@ -938,6 +1003,7 @@ describe('App end-to-end component flows', () => {
       itinerary: plan.itinerary,
       daily_geojson_maps: plan.maps,
       destination_country_code: plan.destination_country_code,
+      resolved_cities: ['Tokyo', 'Kyoto'],
       total_budget: 160000,
       currency: 'JPY',
       budget_allocation: { accommodation: 160000 },
@@ -946,7 +1012,7 @@ describe('App end-to-end component flows', () => {
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: 'New Trip' }));
     fireEvent.change(screen.getByPlaceholderText('e.g. Japan'), { target: { value: 'Japan' } });
-    fireEvent.change(screen.getByPlaceholderText('e.g. Kyoto, Osaka'), { target: { value: 'Tokyo, Kyoto' } });
+    fireEvent.change(destinationCityInput(), { target: { value: 'Tokyo, Kyoto' } });
     fireEvent.change(screen.getByLabelText('Start date'), { target: { value: '2026-08-01' } });
     fireEvent.change(screen.getByLabelText('End date'), { target: { value: '2026-08-05' } });
     fireEvent.change(screen.getByPlaceholderText('e.g. 3000'), { target: { value: '5000' } });
@@ -980,6 +1046,7 @@ describe('App end-to-end component flows', () => {
       reason: 'recommendation_requested',
       chat_reply: 'Confirm the grounded minimum before planning.',
       budget_assessment_id: 'assessment-unknown',
+      resolved_cities: ['Tokyo'],
       stated_budget: null,
       recommended_minimum_budget: 3200,
       base_currency: 'MYR',
@@ -998,7 +1065,7 @@ describe('App end-to-end component flows', () => {
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: 'New Trip' }));
     fireEvent.change(screen.getByPlaceholderText('e.g. Japan'), { target: { value: 'Japan' } });
-    fireEvent.change(screen.getByPlaceholderText('e.g. Kyoto, Osaka'), { target: { value: 'Tokyo' } });
+    fireEvent.change(destinationCityInput(), { target: { value: 'Tokyo' } });
     fireEvent.change(screen.getByLabelText('Start date'), { target: { value: '2026-08-01' } });
     fireEvent.change(screen.getByLabelText('End date'), { target: { value: '2026-08-05' } });
     fireEvent.click(screen.getByRole('checkbox', { name: /I don't know my budget/i }));
@@ -1027,6 +1094,7 @@ describe('App end-to-end component flows', () => {
         reason: 'insufficient_budget',
         chat_reply: 'The entered budget is below the grounded minimum.',
         budget_assessment_id: 'assessment-low',
+        resolved_cities: ['Tokyo'],
         stated_budget: 500,
         recommended_minimum_budget: 3200,
         base_currency: 'MYR',
@@ -1047,6 +1115,7 @@ describe('App end-to-end component flows', () => {
         itinerary: plan.itinerary,
         daily_geojson_maps: plan.maps,
         destination_country_code: plan.destination_country_code,
+        resolved_cities: ['Tokyo'],
         total_budget: 100000,
         currency: 'JPY',
         budget_allocation: { transportation: 100000 },
@@ -1056,7 +1125,7 @@ describe('App end-to-end component flows', () => {
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: 'New Trip' }));
     fireEvent.change(screen.getByPlaceholderText('e.g. Japan'), { target: { value: 'Japan' } });
-    fireEvent.change(screen.getByPlaceholderText('e.g. Kyoto, Osaka'), { target: { value: 'Tokyo' } });
+    fireEvent.change(destinationCityInput(), { target: { value: 'Tokyo' } });
     fireEvent.change(screen.getByLabelText('Start date'), { target: { value: '2026-08-01' } });
     fireEvent.change(screen.getByLabelText('End date'), { target: { value: '2026-08-05' } });
     fireEvent.change(screen.getByPlaceholderText('e.g. 3000'), { target: { value: '500' } });
@@ -1093,6 +1162,7 @@ describe('App end-to-end component flows', () => {
       reason: 'insufficient_budget',
       chat_reply: 'Budget too low.',
       budget_assessment_id: 'assessment-old-trip',
+      resolved_cities: ['Tokyo'],
       stated_budget: 500,
       recommended_minimum_budget: 3200,
       base_currency: 'MYR',
@@ -1112,7 +1182,7 @@ describe('App end-to-end component flows', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'New Trip' }));
     const destination = screen.getByPlaceholderText('e.g. Japan');
     fireEvent.change(destination, { target: { value: 'Japan' } });
-    fireEvent.change(screen.getByPlaceholderText('e.g. Kyoto, Osaka'), { target: { value: 'Tokyo' } });
+    fireEvent.change(destinationCityInput(), { target: { value: 'Tokyo' } });
     fireEvent.change(screen.getByLabelText('Start date'), { target: { value: '2026-08-01' } });
     fireEvent.change(screen.getByLabelText('End date'), { target: { value: '2026-08-05' } });
     fireEvent.change(screen.getByPlaceholderText('e.g. 3000'), { target: { value: '500' } });
@@ -1131,6 +1201,7 @@ describe('App end-to-end component flows', () => {
       reason: 'insufficient_budget',
       chat_reply: 'Budget too low.',
       budget_assessment_id: 'assessment-old-budget',
+      resolved_cities: ['Tokyo'],
       stated_budget: 500,
       recommended_minimum_budget: 3200,
       base_currency: 'MYR',
@@ -1150,7 +1221,7 @@ describe('App end-to-end component flows', () => {
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: 'New Trip' }));
     fireEvent.change(screen.getByPlaceholderText('e.g. Japan'), { target: { value: 'Japan' } });
-    fireEvent.change(screen.getByPlaceholderText('e.g. Kyoto, Osaka'), { target: { value: 'Tokyo' } });
+    fireEvent.change(destinationCityInput(), { target: { value: 'Tokyo' } });
     fireEvent.change(screen.getByLabelText('Start date'), { target: { value: '2026-08-01' } });
     fireEvent.change(screen.getByLabelText('End date'), { target: { value: '2026-08-05' } });
     const amount = screen.getByPlaceholderText('e.g. 3000');
@@ -1188,6 +1259,7 @@ describe('App end-to-end component flows', () => {
         itinerary: plan.itinerary,
         daily_geojson_maps: plan.maps,
         destination_country_code: plan.destination_country_code,
+        resolved_cities: ['Tokyo'],
         total_budget: 160000,
         currency: 'JPY',
         budget_allocation: { transportation: 160000 },
@@ -1197,7 +1269,7 @@ describe('App end-to-end component flows', () => {
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: 'New Trip' }));
     fireEvent.change(screen.getByPlaceholderText('e.g. Japan'), { target: { value: 'Japan' } });
-    fireEvent.change(screen.getByPlaceholderText('e.g. Kyoto, Osaka'), { target: { value: 'Tokyo' } });
+    fireEvent.change(destinationCityInput(), { target: { value: 'Tokyo' } });
     fireEvent.change(screen.getByLabelText('Start date'), { target: { value: '2026-08-01' } });
     fireEvent.change(screen.getByLabelText('End date'), { target: { value: '2026-08-05' } });
     fireEvent.change(screen.getByPlaceholderText('e.g. 3000'), { target: { value: '5000' } });
@@ -1803,7 +1875,7 @@ describe('App end-to-end component flows', () => {
 
       fireEvent.click(await screen.findByRole('button', { name: 'New Trip' }));
       fireEvent.change(screen.getByPlaceholderText('e.g. Japan'), { target: { value: 'Japan' } });
-      fireEvent.change(screen.getByPlaceholderText('e.g. Kyoto, Osaka'), { target: { value: 'Tokyo' } });
+      fireEvent.change(destinationCityInput(), { target: { value: 'Tokyo' } });
       fireEvent.change(screen.getByLabelText('Start date'), { target: { value: '2026-08-01' } });
       fireEvent.change(screen.getByLabelText('End date'), { target: { value: '2026-08-05' } });
       fireEvent.change(screen.getByPlaceholderText('e.g. 3000'), { target: { value: '5000' } });

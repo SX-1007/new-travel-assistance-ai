@@ -875,6 +875,7 @@ describe('frontend API client', () => {
       reason: 'recommendation_requested',
       chat_reply: 'Confirm the grounded minimum.',
       budget_assessment_id: 'assessment-1',
+      resolved_cities: ['Tokyo'],
       stated_budget: null,
       recommended_minimum_budget: 3200,
       base_currency: 'MYR',
@@ -907,6 +908,30 @@ describe('frontend API client', () => {
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(JSON.parse(String(init.body))).toEqual(form);
     expect(JSON.parse(String(init.body))).not.toHaveProperty('total_budget');
+  });
+
+  it.each([
+    ['missing', {}],
+    ['empty', { resolved_cities: [] }],
+  ])('rejects an initial budget confirmation with %s resolved cities', async (_label, cities) => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      status: 'budget_confirmation_required', reason: 'recommendation_requested',
+      chat_reply: 'Confirm the grounded minimum.', budget_assessment_id: 'assessment-1',
+      ...cities,
+      stated_budget: null, recommended_minimum_budget: 3200,
+      base_currency: 'MYR', destination_currency: 'JPY', expires_at: '2026-08-16T09:00:00Z',
+      evidence: {
+        outbound_flight_price: 40000, return_flight_price: 38000,
+        hotel_price_per_night: 12000, hotel_nights: 4,
+      },
+      itinerary: null, daily_geojson_maps: null,
+    }), { status: 200 })));
+    const api = await loadApi();
+
+    await expect(api.submitTripForm({
+      country: 'Japan', city: [], num_people: 1, request_budget_recommendation: true,
+      start_date: '2026-08-01', end_date: '2026-08-05',
+    })).rejects.toThrow('The planning service returned an invalid response.');
   });
 
   it('posts the exact cached assessment id with a confirmed minimum', async () => {
