@@ -16,6 +16,7 @@
  *   • VITE_API_BASE_URL  — e.g. http://localhost:8000
  *   • VITE_MAPBOX_TOKEN  — (optional) public Mapbox token for static day maps
  */
+import { travelDays } from './groundTime';
 
 const API_BASE_URL: string =
   (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '') ??
@@ -1028,54 +1029,6 @@ const isCompleteDay = (value: unknown, expectedDay: number): value is DayItinera
   return value.route == null || isRouteInfo(value.route);
 };
 
-// Same rule as the backend's ground_time.py: a day's usable window is
-// 08:00-22:00 local, from 1.5 h after the outbound flight lands until 3 h
-// before the return flight leaves; under one place's worth of time (1.75 h)
-// makes it a travel day. A long outbound journey can make a day with no
-// flight of its own a travel day (seen live: KUL 19:15 → HND 01:00 two days
-// later left day 2 in transit).
-const HOUR_MS = 3_600_000;
-const DAY_START_HOURS = 8;
-const DAY_END_HOURS = 22;
-const ARRIVAL_SETTLE_HOURS = 1.5;
-const DEPARTURE_BUFFER_HOURS = 3;
-const HOURS_PER_PLACE = 1.75;
-
-/** Local airport wall-clock time as a UTC timestamp, or null when unparseable. */
-const flightTimeUtc = (flight: unknown, side: 'arrival' | 'departure'): number | null => {
-  if (!isRecord(flight)) return null;
-  const airport = flight[`${side}_airport`];
-  const raw = flight[`${side}_time`] || (isRecord(airport) ? airport.time : undefined);
-  if (typeof raw !== 'string') return null;
-  const match = /^(\d{4}-\d{2}-\d{2})(?:[ T](\d{2}):(\d{2}))?/.exec(raw.trim());
-  const day = match ? isoDateUtc(match[1]) : null;
-  if (day === null) return null;
-  return day + (Number(match![2] ?? 0) * 60 + Number(match![3] ?? 0)) * 60_000;
-};
-
-const travelDays = (itinerary: DayItinerary[]): Set<number> => {
-  const legs = (day: DayItinerary): unknown[] => (Array.isArray(day.flight) ? day.flight : []);
-  const firstLegs = legs(itinerary[0]);
-  const lastLegs = legs(itinerary[itinerary.length - 1]);
-  const outbound = firstLegs.length > 0 ? firstLegs[0] : null;
-  const returning = lastLegs.length > 0 && lastLegs[lastLegs.length - 1] !== outbound
-    ? lastLegs[lastLegs.length - 1]
-    : null;
-  const arrival = outbound != null ? flightTimeUtc(outbound, 'arrival') : null;
-  const departure = returning != null ? flightTimeUtc(returning, 'departure') : null;
-  const result = new Set<number>();
-  for (const day of itinerary) {
-    const date = isoDateUtc(day.date)!;
-    let start = date + DAY_START_HOURS * HOUR_MS;
-    let end = date + DAY_END_HOURS * HOUR_MS;
-    if (arrival !== null) start = Math.max(start, arrival + ARRIVAL_SETTLE_HOURS * HOUR_MS);
-    if (departure !== null) end = Math.min(end, departure - DEPARTURE_BUFFER_HOURS * HOUR_MS);
-    const hours = Math.round(Math.max(0, (end - start) / HOUR_MS) * 100) / 100;
-    if (Math.floor(hours / HOURS_PER_PLACE) === 0) result.add(day.day);
-  }
-  return result;
-};
-
 /** Strict recursive guard shared by live and restored itinerary rendering. */
 export const isCompleteItinerary = (value: unknown): value is DayItinerary[] => {
   if (!Array.isArray(value)
@@ -1085,7 +1038,9 @@ export const isCompleteItinerary = (value: unknown): value is DayItinerary[] => 
     if (index === 0) return true;
     return isoDateUtc(day.date)! - isoDateUtc(value[index - 1].date)! === 86_400_000;
   })) return false;
-  // Only a travel day may have no activities.
+  // Only a travel day may have no activities (groundTime.ts, the backend's
+  // rule). A long outbound journey can make a day with no flight of its own
+  // a travel day (seen live: KUL 19:15 → HND 01:00 two days later).
   const inTransit = travelDays(value);
   return value.every((day) => (day.activities ?? []).length > 0 || inTransit.has(day.day));
 };

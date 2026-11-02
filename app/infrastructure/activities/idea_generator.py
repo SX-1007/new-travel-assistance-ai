@@ -36,12 +36,16 @@ if it shares a name or theme with the destination (for a China trip, never a \
 3. Assign each place to a day (1..{num_days}) and an `order` within that day.
 4. The `order` must be the most logical route for the day: group nearby places \
 and progress in one direction. Do not zig-zag.
-5. Each day starts from the hotel. Respect each day's place limit in the day \
-list below: it reflects real flight times. A day marked "travel day" gets NO \
-places at all (the traveller is in transit); a limited day only fits that many.
-6. Pacing: 'relaxed' => 3 places/day; 'moderate' => 4-6; 'packed' => 6-8, \
-but never more than the day's limit or {max_per_day}. Every day that is not a \
-travel day MUST get at least its minimum from the day list (3 on a full day).
+5. Each day starts from the hotel. Respect each day's free hours and place \
+limit in the day list below: they reflect real flight times. A day marked \
+"travel day" gets NO places at all (the traveller is in transit). A meal takes \
+about 1 hour and a sight about 1.75 hours (with getting there), so a short day \
+fits only what its hours allow (for an evening: one sight and dinner, or a night \
+market and dinner).
+6. Pacing ('{pacing}') is already in each day's limit: never more than the day's \
+limit or {max_per_day} places on any day. Every day that is not a travel day \
+MUST get at least its minimum from the day list (3 on a full day). Spread the \
+best-known sights over all days that have time instead of saving them for one day.
 7. Include 1-2 restaurants per day (lunch/dinner) that respect dietary needs.
 8. Estimate each place's TOTAL cost for the whole party ({num_people} people) in \
 the DESTINATION currency. Keep the SUM of attraction costs <= {activity_budget} \
@@ -74,7 +78,8 @@ are added to the places those days already have.
 
 Hard rules:
 1. Return places ONLY for days in: {missing_days}, and at least the day's \
-minimum from the day list for each of them (3 on a full day).
+minimum from the day list for each of them (3 on a full day). A meal takes about \
+1 hour and a sight about 1.75 hours: choose places that fit each day's free hours.
 2. Every place must be a real Google-Maps-searchable venue in {country}.
 3. Set `city` to exactly one value from: {cities}.
 4. Prefer well-known places with unambiguous names so verification succeeds.
@@ -164,13 +169,21 @@ def _common_inputs(request: IdeaRequest) -> dict[str, Any]:
     }
 
 
+def _hours(value: float) -> str:
+    """Free hours to the nearest half hour: ``4``, ``6.5``."""
+
+    return f"{round(value * 2) / 2:g}"
+
+
 def _day_list(request: IdeaRequest) -> str:
-    """``Day 1 (2026-12-10): travel day, no places; Day 2 (...): 3 to 8 places``."""
+    """``Day 1 (2026-12-10): travel day, no places; Day 2 (...): about 4 h
+    free, exactly 3 places; Day 3 (...): about 14 h free, 3 to 5 places``."""
 
     limits = request.day_limits or (request.max_per_day,) * len(request.dates)
+    hours = request.day_hours or (None,) * len(request.dates)
     entries = []
 
-    for index, (day_date, limit) in enumerate(zip(request.dates, limits), start=1):
+    for index, (day_date, limit, free) in enumerate(zip(request.dates, limits, hours), start=1):
         most = min(limit, request.max_per_day)
         least = min(MIN_PLACES_PER_DAY, most)
 
@@ -180,6 +193,9 @@ def _day_list(request: IdeaRequest) -> str:
             allowance = f"exactly {most} place{'s' if most > 1 else ''}"
         else:
             allowance = f"{least} to {most} places"
+
+        if limit > 0 and free is not None:
+            allowance = f"about {_hours(free)} h free, {allowance}"
         entries.append(f"Day {index} ({day_date or 'date unknown'}): {allowance}")
 
     return "; ".join(entries) or "unknown"

@@ -4,9 +4,11 @@ No network, cache, settings or orchestration imports. Everything here can be
 tested with plain values; ``service.py`` supplies the real provider data.
 
 The minimum is the larger of:
-  • cheapest outbound + return flight, divided by the transportation ratio
+  • the outbound + return flights the plan will book (the best-timed pair
+    within 15 % of the cheapest, ``booking.selection.pick_flight_pair``),
+    divided by the transportation ratio
   • cheapest hotel price x nights, divided by the accommodation ratio
-so that the default allocation always covers the real cheapest options.
+so that the default allocation always covers the options the plan books.
 """
 
 from __future__ import annotations
@@ -30,7 +32,8 @@ from app.modules.budget.policies import DEFAULT_BUDGET_RATIOS
 # Stored inside every assessment and its cache key. Bump it whenever the
 # formula or DEFAULT_BUDGET_RATIOS change so stale assessments are ignored.
 # v2: hotel nights start the night the outbound flight lands.
-CALCULATION_VERSION = "allocation-v2"
+# v3: flights chosen by price and time at the destination, as the plan does.
+CALCULATION_VERSION = "allocation-v3"
 ASSESSMENT_TTL_HOURS = 1
 
 _PRICE_REL_TOL = 1e-12
@@ -114,7 +117,7 @@ def build_assessment(
     hotel: dict[str, Any],
     now: datetime,
 ) -> BudgetAssessment:
-    """Create an assessment from already-fetched cheapest provider results.
+    """Create an assessment from already-chosen provider results.
 
     Raises ValueError when any required price is missing or invalid.
     """

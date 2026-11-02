@@ -20,7 +20,10 @@ named days are filled by the rescue rounds alone.
 Only time actually spent at the destination is planned
 (``itinerary.ground_time``): a day whose flight lands after midnight or
 leaves before dawn is a travel day with no places, and a partly free day
-gets only as many places as its hours allow.
+gets only what fits its hours (a meal takes about an hour, a sight 1.75 h).
+No day gets more places than the traveller's pacing allows
+(``PLACES_PER_DAY_BY_PACING``), so one full day isn't packed while the
+others are light.
 """
 
 from __future__ import annotations
@@ -41,7 +44,6 @@ from app.modules.activities.policies import (
     BROAD_SEARCH_LIMIT,
     LOOKUP_WORKERS,
     MAX_EXCLUDED_NAMES,
-    MAX_PLACES_PER_DAY,
     MAX_RESCUE_ROUNDS,
     MIN_PLACES_PER_DAY,
     MAX_SEARCHES_PER_PLAN,
@@ -52,10 +54,12 @@ from app.modules.activities.policies import (
     expected_day_numbers,
     finite_non_negative,
     first_hotel_name,
+    fitting_activities,
     generic_fallback_ideas,
     itinerary_dates,
     merge_into_itinerary,
     place_type_for,
+    places_per_day,
     trusted_ideas,
 )
 from app.modules.activities.ports import ActivityIdeaPort
@@ -64,7 +68,7 @@ from app.modules.itinerary.activity_rescue import (
     deduplicate_activity_buckets,
     rescue_activity_buckets,
 )
-from app.modules.itinerary.ground_time import day_place_limits
+from app.modules.itinerary.ground_time import hours_on_ground, places_capacity
 from app.modules.places.exceptions import (
     PlaceSearchQuotaExhausted,
     PlaceSearchUnavailable,
@@ -221,13 +225,6 @@ def _kept_activities(
     return kept
 
 
-def _first(activities: Sequence[Mapping[str, Any]], limit: int) -> list[dict[str, Any]]:
-    """The first ``limit`` activities in visiting order."""
-
-    ordered = sorted(activities, key=lambda activity: activity.get("order") or 0)
-    return [dict(activity) for activity in ordered[:limit]]
-
-
 def _names(by_day: Mapping[int, Sequence[Mapping[str, Any]]]) -> set[str]:
     return {
         clean_text(activity.get("name"))
@@ -274,8 +271,14 @@ class ActivityPlanningService:
                 searches_used=0,
             )
 
-        known_limits = day_place_limits(itinerary)
-        limits = {day: min(MAX_PLACES_PER_DAY, known_limits.get(day, MAX_PLACES_PER_DAY)) for day in all_days}
+        # Free hours per day (days without a date are unconstrained), and
+        # the most places each day takes: what fits, never above the pacing.
+        hours = hours_on_ground(itinerary)
+        per_day = places_per_day(request.preferences.pacing)
+        limits = {
+            day: min(per_day, places_capacity(hours[day])) if day in hours else per_day
+            for day in all_days
+        }
         # Travel days being (re)planned end up empty, never "missing".
         cleared = {
             day: []
@@ -321,13 +324,14 @@ class ActivityPlanningService:
             country=country,
             cities=trusted_cities,
             dates=itinerary_dates(itinerary),
-            day_limits=tuple(limits.get(day.get("day"), MAX_PLACES_PER_DAY) for day in itinerary),
+            day_limits=tuple(limits.get(day.get("day"), per_day) for day in itinerary),
+            day_hours=tuple(hours.get(day.get("day")) for day in itinerary),
             num_people=max(1, int(request.num_people or 1)),
             hotel_name=first_hotel_name(itinerary),
             preferences=request.preferences,
             activity_budget=finite_non_negative(request.activity_budget),
             food_budget=finite_non_negative(request.food_budget),
-            max_per_day=MAX_PLACES_PER_DAY,
+            max_per_day=per_day,
         )
 
         tried_names: set[str] = set()
@@ -349,13 +353,25 @@ class ActivityPlanningService:
             tried_names.update(idea.name for idea in initial)
 
             by_day = self._verify(
-                trusted_ideas(initial, allowed_days=expected_days, cities=trusted_cities, day_limits=limits),
+                trusted_ideas(
+                    initial,
+                    allowed_days=expected_days,
+                    cities=trusted_cities,
+                    max_per_day=per_day,
+                    day_limits=limits,
+                    day_hours=hours,
+                ),
                 lookups=lookups,
                 country=country,
                 mode="exact",
             )
 
         accepted_names.update(_names(by_day))
+        # Place types each day has so far, so the last round's generic
+        # fallback picks what still fits (the final trim below enforces it).
+        planned_types = {
+            day: [activity.get("type") for activity in activities] for day, activities in by_day.items()
+        }
 
         # ── 2. Top up the days below their target ─────────────────────
         def rescue_round(shortfall: Mapping[int, int], round_number: int) -> ActivitiesByDay:
@@ -371,7 +387,14 @@ class ActivityPlanningService:
             )
             tried_names.update(idea.name for idea in ideas)
 
-            trusted = trusted_ideas(ideas, allowed_days=missing, cities=trusted_cities, day_limits=limits)
+            trusted = trusted_ideas(
+                ideas,
+                allowed_days=missing,
+                cities=trusted_cities,
+                max_per_day=per_day,
+                day_limits=limits,
+                day_hours=hours,
+            )
             final_round = round_number == MAX_RESCUE_ROUNDS
 
             rescued = self._verify(
@@ -389,8 +412,17 @@ class ActivityPlanningService:
                     for day, needed in shortfall.items()
                     if needed > len(rescued.get(day, ()))
                 }
+                planned_now = {
+                    day: [*planned_types.get(day, ()), *(a.get("type") for a in rescued.get(day, ()))]
+                    for day in still_needed
+                }
                 fallback = self._verify(
-                    generic_fallback_ideas(still_needed, cities=trusted_cities),
+                    generic_fallback_ideas(
+                        still_needed,
+                        cities=trusted_cities,
+                        planned=planned_now,
+                        day_hours=hours,
+                    ),
                     lookups=lookups,
                     country=country,
                     mode="broad",
@@ -400,6 +432,10 @@ class ActivityPlanningService:
                     rescued.setdefault(day, []).extend(activities)
 
             accepted_names.update(_names(rescued))
+
+            for day, activities in rescued.items():
+                planned_types.setdefault(day, []).extend(activity.get("type") for activity in activities)
+
             return rescued
 
         rescue = rescue_activity_buckets(
@@ -414,8 +450,18 @@ class ActivityPlanningService:
 
         # ── 3. Final dedupe, budget clamp, projection ─────────────────
         cleaned, _ = deduplicate_activity_buckets(rescue.by_day)
-        # Generic fallback places can overfill a partly free day.
-        cleaned = {day: _first(activities, limits.get(day, MAX_PLACES_PER_DAY)) for day, activities in cleaned.items()}
+        # Rescued and generic places can overfill a day: keep, in visiting
+        # order, what fits its pacing cap and its free hours. Kept days of a
+        # replan are left exactly as they are.
+        planned_days = replan or frozenset(expected_days)
+        cleaned = {
+            day: (
+                fitting_activities(activities, limit=limits.get(day, per_day), hours=hours.get(day))
+                if day in planned_days
+                else activities
+            )
+            for day, activities in cleaned.items()
+        }
         cleaned.update(cleared)
         cleaned = clamp_costs(cleaned, "attraction", idea_request.activity_budget)
         cleaned = clamp_costs(cleaned, "restaurant", idea_request.food_budget)

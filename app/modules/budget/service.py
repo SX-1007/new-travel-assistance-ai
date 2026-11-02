@@ -14,10 +14,12 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from app.modules.booking.hotels import calculate_total_nights, hotel_check_in
+from app.modules.booking.models import FlightResult
 from app.modules.booking.ports import FlightSearchPort, HotelSearchPort
+from app.modules.booking.selection import pick_flight_pair
 from app.modules.budget.assessment import (
     ASSESSMENT_TTL_HOURS,
     assessment_cache_key,
@@ -48,8 +50,8 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _cheapest(future: Future, label: str) -> dict[str, Any]:
-    """Read one cheapest result without accepting missing provider evidence."""
+def _results(future: Future, label: str) -> Sequence[Any]:
+    """A search's results; a failed or empty search is missing evidence."""
     try:
         results: Sequence[Any] = future.result()
     except Exception as exc:
@@ -57,6 +59,29 @@ def _cheapest(future: Future, label: str) -> dict[str, Any]:
 
     if not results:
         raise BudgetAssessmentUnavailable(f"No {label} result is available.")
+    return results
+
+
+def _flight_options(future: Future, label: str) -> list[FlightResult]:
+    """Every valid flight a search returned, in the provider's order."""
+    options: list[FlightResult] = []
+    for result in _results(future, label):
+        try:
+            option = FlightResult.model_validate(result)
+        except (ValidationError, TypeError):
+            continue
+        # A flight without a real price is no evidence for a minimum.
+        if option.price > 0:
+            options.append(option)
+
+    if not options:
+        raise BudgetAssessmentUnavailable(f"No {label} result is available.")
+    return options
+
+
+def _cheapest(future: Future, label: str) -> dict[str, Any]:
+    """Read one cheapest result without accepting missing provider evidence."""
+    results = _results(future, label)
 
     first = results[0]
     if isinstance(first, BaseModel):
@@ -89,7 +114,9 @@ class BudgetAssessmentService:
     # ── Public use cases ────────────────────────────────────────────
 
     def get_or_create(self, trip: BudgetTrip) -> BudgetAssessmentResult:
-        """Return a cached assessment or build one from cheapest real prices.
+        """Return a cached assessment or build one from real prices: the
+        flights the plan will book (``pick_flight_pair``) and the cheapest
+        hotel.
 
         ``persisted`` is False when the new assessment could not be saved
         (including when the cache is down); such an assessment must not be
@@ -263,8 +290,10 @@ class BudgetAssessmentService:
         except Exception as exc:
             raise BudgetAssessmentUnavailable("Exchange-rate lookup failed.") from exc
 
-        # Outbound and return run in parallel; the hotel starts once the
-        # cheapest outbound flight is known, from the night it lands.
+        # Outbound and return run in parallel. The flights are chosen by the
+        # plan's own rule (price and time at the destination), so the plan
+        # can reuse them; the hotel is then searched from the night the
+        # chosen outbound flight lands.
         with ThreadPoolExecutor(max_workers=2) as executor:
             outbound_future = executor.submit(
                 self._flights.search_flights,
@@ -282,7 +311,14 @@ class BudgetAssessmentService:
                 currency=destination_currency,
                 adults=trip.num_people,
             )
-            outbound = _cheapest(outbound_future, "outbound flight")
+            chosen_outbound, chosen_return = pick_flight_pair(
+                _flight_options(outbound_future, "outbound flight"),
+                _flight_options(return_future, "return flight"),
+                start_date=trip.start_date,
+                end_date=trip.end_date,
+            )
+            outbound = chosen_outbound.model_dump(mode="json")
+            return_flight = chosen_return.model_dump(mode="json")
             check_in = hotel_check_in(trip.start_date, trip.end_date, outbound)
             hotel_future = (
                 executor.submit(
@@ -297,7 +333,6 @@ class BudgetAssessmentService:
                 else None
             )
 
-            return_flight = _cheapest(return_future, "return flight")
             hotel = _cheapest(hotel_future, "hotel") if hotel_future else {}
 
         try:

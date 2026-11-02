@@ -1,29 +1,40 @@
-"""How many hours of each trip day the traveller is actually at the destination.
+"""How many hours of each trip day the traveller is actually at the destination,
+and how many places fit into them.
 
 Flights come from real schedules: an overnight outbound flight can land
 after midnight on day 2, and a cheap return flight can leave at 02:15 on the
 last day. Planning a full day of places on such a day would send the
 traveller to places while they are still in the air or at home.
 
-A day's window is 08:00-22:00 local time, starting no earlier than an hour
-and a half after landing (immigration, transfer) and ending three hours
-before the return flight (an international check-in). Flight times are
-the airports' local times, as the provider reports them.
+The window itself (08:00-22:00, 1.5 h after landing, 3 h before the return
+flight) is the booking rule in ``booking.flight_timing``; this module turns
+it into places. A meal takes about an hour and a sight 1.75 h (with the
+walk or ride to it), and a day has at most two meals (lunch and dinner).
+Under one sight's worth of time makes a travel day with no places.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from datetime import date, datetime, time, timedelta
+from collections.abc import Iterable, Mapping, Sequence
+from datetime import date
 from typing import Any, Final
 
+from app.modules.booking.flight_timing import (
+    ARRIVAL_SETTLE,
+    DAY_END,
+    DAY_START,
+    DEPARTURE_BUFFER,
+    flight_time,
+    free_hours,
+)
 
-DAY_START: Final = time(8, 0)
-DAY_END: Final = time(22, 0)
-ARRIVAL_SETTLE: Final = timedelta(hours=1, minutes=30)
-DEPARTURE_BUFFER: Final = timedelta(hours=3)
-# One place (attraction or meal) per this many hours; a full day → 8.
-HOURS_PER_PLACE: Final = 1.75
+
+HOURS_PER_SIGHT: Final = 1.75
+HOURS_PER_MEAL: Final = 1.0
+MEALS_PER_DAY: Final = 2
+# Less than this is a travel day. The frontend's travel-day rule
+# (frontend/src/lib/groundTime.ts) uses the same number.
+MIN_PLANNABLE_HOURS: Final = HOURS_PER_SIGHT
 
 
 def hours_on_ground(itinerary: Sequence[Mapping[str, Any]]) -> dict[int, float]:
@@ -43,8 +54,8 @@ def hours_on_ground(itinerary: Sequence[Mapping[str, Any]]) -> dict[int, float]:
     first_legs, last_legs = _flights(days[0]), _flights(days[-1])
     outbound = first_legs[0] if first_legs else None
     returning = last_legs[-1] if last_legs and last_legs[-1] is not outbound else None
-    arrival = _flight_time(outbound, "arrival") if outbound is not None else None
-    departure = _flight_time(returning, "departure") if returning is not None else None
+    arrival = flight_time(outbound, "arrival") if outbound is not None else None
+    departure = flight_time(returning, "departure") if returning is not None else None
     hours: dict[int, float] = {}
 
     for day in days:
@@ -54,24 +65,33 @@ def hours_on_ground(itinerary: Sequence[Mapping[str, Any]]) -> dict[int, float]:
         if isinstance(number, bool) or not isinstance(number, int) or day_date is None:
             continue
 
-        start = datetime.combine(day_date, DAY_START)
-        end = datetime.combine(day_date, DAY_END)
-
-        if arrival is not None:
-            start = max(start, arrival + ARRIVAL_SETTLE)
-
-        if departure is not None:
-            end = min(end, departure - DEPARTURE_BUFFER)
-
-        hours[number] = round(max(0.0, (end - start).total_seconds() / 3600), 2)
+        hours[number] = free_hours(day_date, arrival=arrival, departure=departure)
 
     return hours
 
 
-def places_capacity(hours: float) -> int:
-    """How many places fit into ``hours`` (0: a travel day)."""
+def place_hours(place_type: Any) -> float:
+    """Time one place takes: a meal is shorter than a sight."""
 
-    return int(max(0.0, hours) // HOURS_PER_PLACE)
+    return HOURS_PER_MEAL if place_type == "restaurant" else HOURS_PER_SIGHT
+
+
+def places_capacity(hours: float) -> int:
+    """Most places that fit into ``hours``: up to two meals, the rest sights
+    (0: a travel day)."""
+
+    if hours < MIN_PLANNABLE_HOURS:
+        return 0
+
+    meals = min(MEALS_PER_DAY, int(hours // HOURS_PER_MEAL))
+    return meals + int((hours - meals * HOURS_PER_MEAL) // HOURS_PER_SIGHT)
+
+
+def fits_in(place_types: Iterable[Any], hours: float) -> bool:
+    """Whether these places, meals at an hour and sights at 1.75 h, fit."""
+
+    types = list(place_types)
+    return len(types) <= places_capacity(hours) and sum(map(place_hours, types)) <= hours
 
 
 def day_place_limits(itinerary: Sequence[Mapping[str, Any]]) -> dict[int, int]:
@@ -101,25 +121,6 @@ def _flights(day: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     return []
 
 
-def _flight_time(flight: Mapping[str, Any], side: str) -> datetime | None:
-    airport = flight.get(f"{side}_airport")
-    raw = flight.get(f"{side}_time")
-
-    if not raw and isinstance(airport, Mapping):
-        raw = airport.get("time")
-
-    if not isinstance(raw, str):
-        return None
-
-    try:
-        parsed = datetime.fromisoformat(raw.strip())
-    except ValueError:
-        return None
-
-    # Local airport time: compare as naive wall-clock time.
-    return parsed.replace(tzinfo=None)
-
-
 def _date(value: Any) -> date | None:
     if not isinstance(value, str):
         return None
@@ -135,9 +136,14 @@ __all__ = [
     "DAY_END",
     "DAY_START",
     "DEPARTURE_BUFFER",
-    "HOURS_PER_PLACE",
+    "HOURS_PER_MEAL",
+    "HOURS_PER_SIGHT",
+    "MEALS_PER_DAY",
+    "MIN_PLANNABLE_HOURS",
     "day_place_limits",
+    "fits_in",
     "hours_on_ground",
+    "place_hours",
     "places_capacity",
     "travel_days",
 ]

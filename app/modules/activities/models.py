@@ -51,10 +51,14 @@ class IdeaRequest:
     preferences: ActivityPreferences
     activity_budget: float
     food_budget: float
+    # The traveller's pacing cap: no day gets more places than this.
     max_per_day: int
     # Most places per day, aligned with ``dates``; 0 is a travel day (the
     # traveller is not at the destination). Empty: ``max_per_day`` each.
     day_limits: tuple[int, ...] = ()
+    # Free hours at the destination per day, aligned with ``dates`` (None:
+    # unknown). Empty: not given.
+    day_hours: tuple[float | None, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

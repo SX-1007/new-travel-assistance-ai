@@ -140,10 +140,13 @@ class BookingPlanningService:
 
         outbound_options, return_options = self._search_flights(trip)
 
+        # Same rule as the budget check, so both choose the same flights.
         outbound, returning = pick_flight_pair(
             outbound_options,
             return_options,
-            budget_cap(trip.transportation_budget),
+            start_date=trip.start_date,
+            end_date=trip.end_date,
+            cap=budget_cap(trip.transportation_budget),
         )
         # The hotel is searched from the night the chosen flight lands.
         check_in = hotel_check_in(trip.start_date, trip.end_date, outbound)

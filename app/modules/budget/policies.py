@@ -13,8 +13,8 @@ from app.modules.budget.models import (
 
 
 # Share of the trip total given to each category on a fresh plan. The
-# assessment minimum is also derived from these ratios: the cheapest return
-# flights must fit in "transportation" and the cheapest hotel in
+# assessment minimum is also derived from these ratios: the return flights
+# the plan books must fit in "transportation" and the cheapest hotel in
 # "accommodation". Changing a ratio changes both, so bump
 # assessment.CALCULATION_VERSION when you do.
 DEFAULT_BUDGET_RATIOS: Final[

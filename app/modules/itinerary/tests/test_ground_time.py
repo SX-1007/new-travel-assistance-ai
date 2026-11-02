@@ -32,7 +32,8 @@ def test_partly_free_boundary_days_get_their_remaining_hours():
 
     # Ground from 15:30 to 22:00, and 08:00 until 16:00 (3 h before 19:00).
     assert hours_on_ground(itinerary) == {1: 6.5, 2: 14.0, 3: 8.0}
-    assert day_place_limits(itinerary) == {1: 3, 2: 8, 3: 4}
+    # Two meals (1 h each) and the rest sights (1.75 h): 6.5 h → 2 + 2.
+    assert day_place_limits(itinerary) == {1: 4, 2: 8, 3: 5}
 
 
 def test_a_same_day_trip_uses_both_legs_of_day_one():

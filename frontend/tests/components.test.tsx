@@ -660,7 +660,7 @@ describe('ItineraryView structured renderer', () => {
       .toHaveTextContent('Long Haul Air');
 
     const inAir = screen.getByRole('group', { name: 'Day 1 in transit' });
-    expect(inAir).toHaveTextContent('In transit');
+    expect(inAir).toHaveTextContent('In transit, your flight lands on 3 Aug at 01:00');
     // The flight's price is in the Flights section, not the day.
     expect(inAir).not.toHaveTextContent('500');
     expect(within(inAir).queryByRole('group', { name: /flight ticket/ })).not.toBeInTheDocument();
@@ -671,6 +671,32 @@ describe('ItineraryView structured renderer', () => {
 
     expect(screen.queryByRole('group', { name: 'Day 3 in transit' })).not.toBeInTheDocument();
     expect(screen.getByText('Day 3')).toBeInTheDocument();
+    // Landing at 01:00 leaves day 3 whole: only the two transit rows explain.
+    expect(screen.getAllByText(/your flight lands/)).toHaveLength(2);
+  });
+
+  it('says why an arrival day is short', () => {
+    // Found live (B34): VZ 681 landed 16:25, so day 1 was an evening only.
+    renderComplete([
+      {
+        day: 1,
+        date: '2026-11-15',
+        flight: [{
+          airline: 'Afternoon Air',
+          departure_airport: { id: 'KUL' },
+          arrival_airport: { id: 'BKK' },
+          departure_time: '2026-11-15 15:10',
+          arrival_time: '2026-11-15 16:25',
+          price: 100,
+        }],
+        activities: [{ name: 'Jodd Fairs' }],
+        day_total_cost: 120,
+      },
+      { day: 2, date: '2026-11-16', activities: [{ name: 'Wat Pho' }], day_total_cost: 20 },
+    ], 140);
+
+    expect(screen.getByText('Free from 17:55, your flight lands 16:25')).toBeInTheDocument();
+    expect(screen.getAllByText(/your flight lands/)).toHaveLength(1);
   });
 
   it('shows both legs of a same-day trip', () => {

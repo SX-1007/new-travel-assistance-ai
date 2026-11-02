@@ -568,8 +568,8 @@ const NewTripForm = ({
               <div className="space-y-1 text-xs">
                 <p className="pb-1 text-slate-600">
                   {budgetDecision.evidence.hotel_nights === 0
-                    ? 'Current cheapest flight prices must fit the fixed 25% transportation allocation; no overnight accommodation is required.'
-                    : 'Current cheapest provider prices must fit the fixed allocation: 25% transportation and 35% accommodation.'}
+                    ? 'The flights we would book (the best-timed within 15% of the cheapest) must fit the fixed 25% transportation allocation; no overnight accommodation is required.'
+                    : 'The flights we would book (the best-timed within 15% of the cheapest) and the cheapest hotel must fit the fixed allocation: 25% transportation and 35% accommodation.'}
                 </p>
                 <p>
                   Outbound flight: {formatMoney(

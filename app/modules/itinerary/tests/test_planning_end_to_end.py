@@ -374,6 +374,9 @@ def test_travel_days_get_no_places_and_the_plan_still_validates():
     assert [day["activities"] for day in (days[0], days[2])] == [[], []]
     assert [a["name"] for a in days[1]["activities"]][:2] == ["Tokyo Tower", "Ueno Park"]
     # Travel days were neither offered to the model nor "rescued"; the one
-    # full day was topped up towards the minimum of 3.
-    assert ideas.request.day_limits == (0, 8, 0)
+    # full day was topped up towards the minimum of 3. Moderate pacing caps
+    # the full day at 5 places.
+    assert ideas.request.day_limits == (0, 5, 0)
+    assert ideas.request.day_hours == (0.0, 14.0, 0.0)
+    assert ideas.request.max_per_day == 5
     assert ideas.rescue_calls and all(call == (2,) for call in ideas.rescue_calls)

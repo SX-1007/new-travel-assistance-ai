@@ -5,7 +5,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-from app.modules.booking.models import FlightResult, HotelResult
+from app.modules.booking.models import BookingTrip, FlightAirport, FlightResult, HotelResult
+from app.modules.booking.service import BookingPlanningService
 from app.modules.budget.assessment import assessment_cache_key
 from app.modules.budget.chat_gate import evaluate_chat_budget
 from app.modules.budget.exceptions import BudgetAssessmentUnavailable
@@ -139,6 +140,71 @@ def test_hotel_is_searched_from_the_night_the_outbound_flight_lands():
 
     assert hotels.check_ins == ["2026-11-02"]
     assert result.assessment.evidence.hotel_nights == 3
+
+
+class TimedFlights:
+    """KUL ⇄ HND with real times: the cheapest legs leave little time there."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def search_flights(self, **kwargs):
+        self.calls += 1
+
+        def leg(number, price, departs, arrives, origin, destination):
+            return FlightResult(
+                flight_number=number,
+                price=price,
+                departure_airport=FlightAirport(id=origin, time=departs),
+                arrival_airport=FlightAirport(id=destination, time=arrives),
+            )
+
+        if kwargs["origin"] == "Malaysia":
+            return [
+                leg("LATE", 40000.0, "2026-11-01 15:10", "2026-11-01 23:00", "KUL", "HND"),
+                leg("EARLY", 44000.0, "2026-11-01 00:30", "2026-11-01 08:30", "KUL", "HND"),
+            ]
+        return [
+            leg("DAWN", 35000.0, "2026-11-05 06:00", "2026-11-05 13:00", "HND", "KUL"),
+            leg("NIGHT", 38000.0, "2026-11-05 21:00", "2026-11-06 03:00", "HND", "KUL"),
+        ]
+
+
+def test_budget_evidence_is_the_flights_the_plan_books():
+    result = make_service(flights=TimedFlights()).get_or_create(TRIP)
+    evidence = result.assessment.evidence
+
+    # 82,000 is within 15 % of the cheapest 75,000 and gives two more half days.
+    assert (evidence.outbound_flight["flight_number"], evidence.return_flight["flight_number"]) == ("EARLY", "NIGHT")
+    assert (evidence.outbound_flight_price, evidence.return_flight_price) == (44000.0, 38000.0)
+    # The minimum is priced from those flights: 82,000 / 0.25 / 32 MYR.
+    assert result.assessment.recommended_minimum_budget == 10250.0
+
+    # The plan's own search, from the same results, books the same pair.
+    planner = BookingPlanningService(flights=TimedFlights(), hotels=FakeHotels())
+    days = planner.plan_skeleton(
+        BookingTrip(
+            origin_country="Malaysia",
+            destination_country="Japan",
+            destination_country_code="JP",
+            city="Tokyo",
+            start_date=TRIP.start_date,
+            end_date=TRIP.end_date,
+            currency="JPY",
+            adults=2,
+        )
+    ).itinerary
+    assert (days[0]["flight"][0]["flight_number"], days[-1]["flight"][-1]["flight_number"]) == ("EARLY", "NIGHT")
+
+
+def test_flights_without_a_real_price_are_not_evidence():
+    class FreeFlights(FakeFlights):
+        def search_flights(self, **kwargs):
+            self.calls += 1
+            return [FlightResult(price=0.0)]
+
+    with pytest.raises(BudgetAssessmentUnavailable):
+        make_service(flights=FreeFlights()).get_or_create(TRIP)
 
 
 def test_missing_hotel_makes_assessment_unavailable_and_releases_lease():

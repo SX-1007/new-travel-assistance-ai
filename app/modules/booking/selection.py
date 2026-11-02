@@ -7,15 +7,24 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import Any, TypeVar
+from typing import Any, Final, TypeVar
 
+from app.modules.booking.flight_timing import flight_time, trip_free_hours
 from app.modules.booking.flights import normalise_iata_code
 from app.modules.booking.hotels import hotel_check_in
 from app.modules.booking.models import FlightResult, HotelResult
 
 
 _Option = TypeVar("_Option", FlightResult, HotelResult)
+
+# Flight choice: a pair may cost up to 15 % more than the cheapest pair if
+# it leaves more time at the destination ...
+PRICE_TOLERANCE: Final = 0.15
+# ... but only if it adds more than an hour; within an hour of the best
+# time, the cheapest pair wins.
+TIME_SLACK_HOURS: Final = 1.0
 
 
 def money(value: Any) -> float:
@@ -128,18 +137,100 @@ def pick_hotel(
     return options[0].model_copy(update={"over_budget": True})
 
 
+@dataclass(frozen=True, slots=True)
+class _Pair:
+    outbound: FlightResult | None
+    returning: FlightResult | None
+    # Usable hours at the destination; None when a leg's time is unreadable.
+    hours: float | None
+
+    @property
+    def legs(self) -> tuple[FlightResult, ...]:
+        return tuple(leg for leg in (self.outbound, self.returning) if leg is not None)
+
+    @property
+    def price(self) -> float:
+        return sum(leg.price for leg in self.legs)
+
+    @property
+    def stops(self) -> int:
+        return sum(leg.stops for leg in self.legs)
+
+    @property
+    def duration(self) -> int:
+        return sum(leg.duration for leg in self.legs)
+
+
 def pick_flight_pair(
     outbound_options: Sequence[FlightResult],
     return_options: Sequence[FlightResult],
-    cap: float | None,
+    *,
+    start_date: str,
+    end_date: str,
+    cap: float | None = None,
 ) -> tuple[FlightResult | None, FlightResult | None]:
-    """Cheapest legs; both flagged ``over_budget`` if their sum exceeds cap."""
+    """The outbound + return pair that leaves the most time at the destination,
+    among pairs costing at most ``PRICE_TOLERANCE`` more than the cheapest.
 
-    outbound = outbound_options[0] if outbound_options else None
-    returning = return_options[0] if return_options else None
-    legs = [leg for leg in (outbound, returning) if leg is not None]
+    Time is the trip's usable hours (``flight_timing``): an outbound flight
+    landing by about noon and a return leaving in the evening score best.
+    Pairs within ``TIME_SLACK_HOURS`` of the best time count as equally
+    good, and the cheapest of those wins, so a few minutes never cost extra.
+    A flight whose time can't be read only wins when no pair's time can be.
 
-    if cap is not None and sum(leg.price for leg in legs) > cap:
+    ``cap`` (the transport budget, None for none) also bounds the choice.
+    When even the cheapest pair is over it, that pair is returned with both
+    legs flagged ``over_budget``. The budget check and the plan both choose
+    with this rule, so the plan can reuse the budget check's flights.
+    """
+
+    if not outbound_options and not return_options:
+        return None, None
+
+    # A missing leg (None) is priced 0 and imposes no time limit.
+    outbound_list: list[FlightResult | None] = list(outbound_options) or [None]
+    return_list: list[FlightResult | None] = list(return_options) or [None]
+
+    arrivals = [flight_time(leg, "arrival") if leg is not None else None for leg in outbound_list]
+    departures = [flight_time(leg, "departure") if leg is not None else None for leg in return_list]
+    pairs: list[_Pair] = []
+
+    for out_index, outbound in enumerate(outbound_list):
+        for return_index, returning in enumerate(return_list):
+            unreadable = (outbound is not None and arrivals[out_index] is None) or (
+                returning is not None and departures[return_index] is None
+            )
+            hours = None if unreadable else trip_free_hours(
+                start_date,
+                end_date,
+                arrival=arrivals[out_index],
+                departure=departures[return_index],
+            )
+            pairs.append(_Pair(outbound, returning, hours))
+
+    cheapest = min(pair.price for pair in pairs)
+    ceiling = cheapest * (1 + PRICE_TOLERANCE)
+
+    if cap is not None:
+        # Over budget either way: the smallest shortfall is the cheapest pair.
+        ceiling = min(ceiling, cap) if cheapest <= cap else cheapest
+
+    candidates = [pair for pair in pairs if pair.price <= ceiling]
+    known = [pair.hours for pair in candidates if pair.hours is not None]
+
+    if known:
+        enough = max(known) - TIME_SLACK_HOURS
+        candidates = [pair for pair in candidates if pair.hours is not None and pair.hours >= enough]
+
+    # Ties: more time, then fewer stops, then a shorter journey. min() keeps
+    # the provider's (cheapest-first) order among exact ties.
+    chosen = min(
+        candidates,
+        key=lambda pair: (pair.price, -(pair.hours or 0.0), pair.stops, pair.duration),
+    )
+    outbound, returning = chosen.outbound, chosen.returning
+
+    if cap is not None and chosen.price > cap:
         outbound = outbound.model_copy(update={"over_budget": True}) if outbound else None
         returning = returning.model_copy(update={"over_budget": True}) if returning else None
 
@@ -240,6 +331,8 @@ def build_skeleton(
 
 
 __all__ = [
+    "PRICE_TOLERANCE",
+    "TIME_SLACK_HOURS",
     "accommodation_budget",
     "alternatives",
     "budget_cap",

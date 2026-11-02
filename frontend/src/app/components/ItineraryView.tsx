@@ -4,8 +4,10 @@
  * Renders the backend `draft_itinerary` (+ `daily_map_info` GeoJSON) as
  * first-class UI: a Flights section for the whole trip, then per day a hotel
  * card, attraction/restaurant cards, and a Mapbox static map showing all
- * stops + the route. Days spent in transit collapse to one line. Users can
- * toggle the route travel profile (driving / walking / cycling).
+ * stops + the route. Days spent in transit collapse to one line, and a day
+ * the flight times shorten says why ("Free from 17:55, your flight lands
+ * 16:25"). Users can toggle the route travel profile (driving / walking /
+ * cycling).
  *
  * Place costs are AI estimates (flagged `is_estimated`) — an "estimated" note is
  * shown wherever they appear, per the backend contract.
@@ -21,6 +23,7 @@ import type {
   BudgetInfo,
 } from '../../lib/api';
 import { apiConfig, isCompleteItinerarySnapshot } from '../../lib/api';
+import { dayFreeTimes } from '../../lib/groundTime';
 import { buildStaticMapUrl } from '../../lib/mapStatic';
 
 const PROFILE_META: Record<string, { icon: React.ElementType; label: string }> = {
@@ -536,7 +539,7 @@ const dayCostWithoutFlights = (day: DayItinerary): number => {
 };
 
 /** A day with no time at the destination: one line, not a full card. */
-const TransitDayRow = ({ day }: { day: DayItinerary }) => (
+const TransitDayRow = ({ day, note }: { day: DayItinerary; note: string | null }) => (
   <div
     role="group"
     aria-label={`Day ${day.day} in transit`}
@@ -548,7 +551,7 @@ const TransitDayRow = ({ day }: { day: DayItinerary }) => (
     <span className="font-semibold text-slate-700">Day {day.day}</span>
     {day.date && <span className="text-xs text-slate-500">{day.date}</span>}
     <span className="flex items-center gap-1 text-xs text-slate-500">
-      <Plane size={12} /> In transit: no time at the destination
+      <Plane size={12} /> {note ?? 'In transit: no time at the destination'}
     </span>
     {day.hotel?.hotel_name && (
       <span className="flex items-center gap-1 text-xs text-indigo-600">
@@ -566,9 +569,12 @@ const TransitDayRow = ({ day }: { day: DayItinerary }) => (
 const DayBlock = ({
   day,
   fc,
+  note,
 }: {
   day: DayItinerary;
   fc: GeoJSONFeatureCollection | undefined;
+  /** Why the flight times shorten this day; null on a full day. */
+  note: string | null;
 }) => {
   // Old agent edits may contain ad-hoc partial dictionaries. Do not present
   // those as verified places; valid backend activities always carry a name and
@@ -580,7 +586,7 @@ const DayBlock = ({
     ),
   );
   // Only travel days are empty (the validator allows nothing else).
-  if (activities.length === 0) return <TransitDayRow day={day} />;
+  if (activities.length === 0) return <TransitDayRow day={day} note={note} />;
   return (
     <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
       <div className="flex items-center gap-3 border-b border-slate-100 px-5 py-3">
@@ -592,6 +598,11 @@ const DayBlock = ({
           {day.date && (
             <div className="flex items-center gap-1 text-xs text-slate-500">
               <CalendarDays size={11} /> {day.date}
+            </div>
+          )}
+          {note && (
+            <div className="mt-0.5 flex items-center gap-1 text-xs text-amber-700">
+              <Clock size={11} className="shrink-0" /> {note}
             </div>
           )}
         </div>
@@ -631,6 +642,7 @@ export default function ItineraryView(props: ItineraryViewProps) {
       ? { destination_country_code: props.destinationCountryCode }
       : {}),
   })) return null;
+  const freeTimes = dayFreeTimes(itinerary);
   return (
     <div className="space-y-4">
       <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
@@ -647,6 +659,7 @@ export default function ItineraryView(props: ItineraryViewProps) {
           key={day.day}
           day={day}
           fc={maps?.[String(day.day)]}
+          note={freeTimes.get(day.day)?.note ?? null}
         />
       ))}
     </div>

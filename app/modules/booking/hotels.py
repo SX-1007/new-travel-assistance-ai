@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
-from datetime import date, datetime, time, timedelta
+from datetime import date, time, timedelta
 from typing import Any, Final
 
+from app.modules.booking.flight_timing import flight_time
 from app.modules.booking.models import HotelLocation, HotelResult
 from app.modules.booking.ports import HotelLocationVerifierPort
 from app.modules.booking.validation import parse_budget_cap
@@ -34,7 +35,7 @@ def hotel_check_in(start_date: str, end_date: str, outbound: Any) -> str:
     except (TypeError, ValueError):
         return start_date
 
-    arrival = _arrival_time(outbound)
+    arrival = flight_time(outbound, "arrival")
     if arrival is None:
         return start_date
 
@@ -48,26 +49,6 @@ def hotel_check_in(start_date: str, end_date: str, outbound: Any) -> str:
 def hotel_nights(start_date: str, end_date: str, outbound: Any) -> int:
     """Nights from the first hotel night (``hotel_check_in``) to the end date."""
     return calculate_total_nights(hotel_check_in(start_date, end_date, outbound), end_date)
-
-
-def _arrival_time(flight: Any) -> datetime | None:
-    if not isinstance(flight, Mapping) and callable(getattr(flight, "model_dump", None)):
-        flight = flight.model_dump(mode="json")
-    if not isinstance(flight, Mapping):
-        return None
-
-    airport = flight.get("arrival_airport")
-    raw = flight.get("arrival_time") or (airport.get("time") if isinstance(airport, Mapping) else None)
-    if not isinstance(raw, str):
-        return None
-
-    try:
-        parsed = datetime.fromisoformat(raw.strip())
-    except ValueError:
-        return None
-
-    # Local airport time: compare as naive wall-clock time.
-    return parsed.replace(tzinfo=None)
 
 
 def calculate_total_nights(start_date: str, end_date: str) -> int:

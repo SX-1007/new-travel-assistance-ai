@@ -4,18 +4,28 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterable, Mapping, Sequence
+from types import MappingProxyType
 from typing import Any, Final
 
 from app.modules.activities.models import (
     ActivityPreferences,
+    Pacing,
     PlaceIdea,
     PlaceType,
 )
+from app.modules.itinerary.ground_time import fits_in
 from app.modules.places.models import VerifiedPlace
 from app.modules.places.policies import canonical_city, clean_text, join_query, text_key
 
 
 MAX_PLACES_PER_DAY: Final = 8
+
+# Most places on any one day, by the traveller's pacing. Without a cap the
+# model put six places on the one full day of a three-day trip and two on
+# the others. "packed" allows a full day's worth.
+PLACES_PER_DAY_BY_PACING: Final[Mapping[Pacing, int]] = MappingProxyType(
+    {"relaxed": 3, "moderate": 5, "packed": MAX_PLACES_PER_DAY}
+)
 
 # Every day with time at the destination aims for at least this many places
 # (fewer only when its hours fit fewer). Rescue rounds top up short days; a
@@ -80,6 +90,12 @@ def preferences_from_profile(profile: Mapping[str, Any] | None) -> ActivityPrefe
         dietary=_text_values(profile.get("dietary_restrictions")),
         pacing=pacing if pacing in _PACING_VALUES else "moderate",  # type: ignore[arg-type]
     )
+
+
+def places_per_day(pacing: Any) -> int:
+    """The pacing's daily cap; an unknown pacing counts as moderate."""
+
+    return PLACES_PER_DAY_BY_PACING.get(pacing, PLACES_PER_DAY_BY_PACING["moderate"])
 
 
 def place_type_for(category: Any) -> PlaceType:
@@ -147,12 +163,18 @@ def trusted_ideas(
     cities: Sequence[str],
     max_per_day: int = MAX_PLACES_PER_DAY,
     day_limits: Mapping[int, int] | None = None,
+    day_hours: Mapping[int, float] | None = None,
 ) -> list[PlaceIdea]:
     """Bind model ideas to server-owned days and cities; cap each day (at
-    ``max_per_day``, or the day's own lower limit)."""
+    ``max_per_day``, or the day's own lower limit) and, where its free hours
+    are known, keep only what fits them (meals 1 h, sights 1.75 h).
+
+    Ideas are taken in visiting order; one that doesn't fit is skipped, so
+    a later, shorter one (a meal) can still be kept.
+    """
 
     allowed = set(allowed_days)
-    per_day: dict[int, int] = {}
+    per_day: dict[int, list[PlaceType]] = {}
     trusted: list[PlaceIdea] = []
 
     for idea in sorted(ideas, key=lambda item: (item.day, item.order)):
@@ -160,25 +182,60 @@ def trusted_ideas(
             continue
 
         city = canonical_city(idea.city, cities)
-
+        kept = per_day.setdefault(idea.day, [])
         cap = min(max_per_day, (day_limits or {}).get(idea.day, max_per_day))
+        hours = (day_hours or {}).get(idea.day)
 
-        if city is None or per_day.get(idea.day, 0) >= cap:
+        if city is None or len(kept) >= cap:
             continue
 
-        per_day[idea.day] = per_day.get(idea.day, 0) + 1
+        if hours is not None and not fits_in([*kept, idea.place_type], hours):
+            continue
+
+        kept.append(idea.place_type)
         trusted.append(idea.model_copy(update={"city": city}))
 
     return trusted
+
+
+def fitting_activities(
+    activities: Sequence[Mapping[str, Any]],
+    *,
+    limit: int,
+    hours: float | None,
+) -> list[dict[str, Any]]:
+    """The activities that fit the day, in visiting order: at most
+    ``limit``, and within ``hours`` when known (meals 1 h, sights 1.75 h).
+    One that doesn't fit is skipped, not the rest of the day."""
+
+    kept: list[dict[str, Any]] = []
+
+    for activity in sorted(activities, key=lambda item: item.get("order") or 0):
+        if len(kept) >= limit:
+            break
+
+        if hours is not None and not fits_in([*(a.get("type") for a in kept), activity.get("type")], hours):
+            continue
+
+        kept.append(dict(activity))
+
+    return kept
 
 
 def generic_fallback_ideas(
     shortfall: Mapping[int, int],
     *,
     cities: Sequence[str],
+    planned: Mapping[int, Sequence[Any]] | None = None,
+    day_hours: Mapping[int, float] | None = None,
 ) -> list[PlaceIdea]:
     """Provider-grounded generic places: ``shortfall[day]`` for each day,
     alternating attraction and restaurant (attraction first).
+
+    With a day's free hours and the place types it already has
+    (``planned``), each slot takes the alternating type only if it fits
+    (leaving room for the slots after it), else the other type, else
+    nothing more is added to that day.
 
     Cities are assigned round-robin so a multi-city trip spreads fallbacks.
     """
@@ -192,9 +249,29 @@ def generic_fallback_ideas(
 
     for day, needed in shortfall.items():
         city = clean_cities[(day - 1) % len(clean_cities)]
+        hours = (day_hours or {}).get(day)
+        day_types: list[Any] = list((planned or {}).get(day, ()))
 
         for index in range(max(0, needed)):
-            place_type: PlaceType = "attraction" if index % 2 == 0 else "restaurant"
+            preferred: PlaceType = "attraction" if index % 2 == 0 else "restaurant"
+            other: PlaceType = "restaurant" if preferred == "attraction" else "attraction"
+            # First a type that still leaves room for the remaining slots as
+            # meals (the shortest places), then any type that fits at all.
+            remaining: list[PlaceType] = ["restaurant"] * (needed - index - 1)
+            place_type = next(
+                (
+                    candidate
+                    for tail in (remaining, [])
+                    for candidate in (preferred, other)
+                    if hours is None or fits_in([*day_types, candidate, *tail], hours)
+                ),
+                None,
+            )
+
+            if place_type is None:
+                break
+
+            day_types.append(place_type)
             ideas.append(
                 PlaceIdea(
                     name=f"popular {'tourist attraction' if place_type == 'attraction' else 'restaurant'} in {city}",
@@ -355,6 +432,7 @@ def merge_into_itinerary(
 
 __all__ = [
     "BROAD_SEARCH_LIMIT",
+    "PLACES_PER_DAY_BY_PACING",
     "LOOKUP_WORKERS",
     "MAX_EXCLUDED_NAMES",
     "MAX_PLACES_PER_DAY",
@@ -370,10 +448,12 @@ __all__ = [
     "expected_day_numbers",
     "finite_non_negative",
     "first_hotel_name",
+    "fitting_activities",
     "generic_fallback_ideas",
     "itinerary_dates",
     "merge_into_itinerary",
     "place_type_for",
+    "places_per_day",
     "preferences_from_profile",
     "trusted_ideas",
 ]
