@@ -65,6 +65,12 @@ class OwnershipStore:
         self.rows[session_id] = [user_id, "ready"]
         return True
 
+    def delete(self, session_id, user_id):
+        if self.rows.get(session_id, [None])[0] != user_id:
+            return False
+        del self.rows[session_id]
+        return True
+
     def verify(self, session_id, user_id):
         return self.rows.get(session_id) == [user_id, "ready"]
 

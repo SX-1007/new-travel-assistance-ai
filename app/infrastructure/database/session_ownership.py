@@ -183,6 +183,24 @@ class SessionOwnershipRepository:
                     )
                     return cursor.fetchone() is not None
 
+    def delete(self, session_id: str, user_id: str) -> bool:
+        """Delete a session's ownership row when it belongs to the same user."""
+        self._ensure_schema()
+
+        with get_connection() as connection:
+            with connection.transaction():
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        DELETE FROM trip_session_owners
+                        WHERE session_id = %s
+                          AND user_id = %s
+                        RETURNING session_id
+                        """,
+                        (session_id, user_id),
+                    )
+                    return cursor.fetchone() is not None
+
     def verify(self, session_id: str, user_id: str) -> bool:
         """Return whether a ready session belongs to the supplied user."""
         self._ensure_schema()

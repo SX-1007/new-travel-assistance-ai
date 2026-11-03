@@ -38,6 +38,7 @@ class Checkpoints:
         self.saved = saved
         self.history = list(history)
         self.scans = 0
+        self.deleted = []
 
     async def aget_tuple(self, config):
         return self.saved
@@ -47,6 +48,10 @@ class Checkpoints:
 
         for item in self.history:
             yield item
+
+    async def adelete_thread(self, thread_id):
+        self.deleted.append(thread_id)
+        self.saved = None
 
 
 def checkpoint(values, owner="user-1"):
@@ -177,6 +182,77 @@ def test_legacy_history_is_scanned_once_per_session():
     assert checkpoints.scans == 1
     assert [entry["revision"] for entry in workflow.calls[0][0]["itinerary_history"]] == [1]
     assert "itinerary_history" not in workflow.calls[1][0]
+
+
+# ── Delete ──────────────────────────────────────────────────────────
+
+
+def delete(app, user_id="user-1"):
+    return app.delete_session("t", user_id=user_id)
+
+
+def test_the_owner_deletes_every_checkpoint_and_the_ownership_row():
+    checkpoints = Checkpoints(saved=checkpoint({"plan_revision": 1}))
+    app, store = runtime(checkpoints=checkpoints)
+    store.backfill("t", "user-1")
+
+    asyncio.run(delete(app))
+
+    assert checkpoints.deleted == ["t"] and "t" not in store.rows
+
+
+def test_another_user_cannot_delete_a_session():
+    checkpoints = Checkpoints(saved=checkpoint({"plan_revision": 1}))
+    app, store = runtime(checkpoints=checkpoints)
+    store.backfill("t", "user-1")
+
+    with pytest.raises(SessionAccessDenied):
+        asyncio.run(delete(app, user_id="intruder"))
+
+    assert checkpoints.deleted == [] and store.rows["t"] == ["user-1", "ready"]
+
+
+def test_a_legacy_session_is_deleted_by_its_checkpoint_owner_and_a_missing_one_is_not_found():
+    checkpoints = Checkpoints(saved=checkpoint({"plan_revision": 1}))
+    app, store = runtime(checkpoints=checkpoints)
+
+    asyncio.run(delete(app))
+
+    assert checkpoints.deleted == ["t"] and store.rows == {}
+
+    with pytest.raises(SessionAccessDenied):
+        asyncio.run(delete(app))
+
+
+def test_a_half_finished_delete_can_be_retried():
+    # The checkpoints went but the ownership row didn't: the owner check
+    # still passes, so the retry removes the row.
+    checkpoints = Checkpoints(saved=None)
+    app, store = runtime(checkpoints=checkpoints)
+    store.backfill("t", "user-1")
+
+    asyncio.run(delete(app))
+
+    assert "t" not in store.rows
+
+
+def test_a_session_is_not_deleted_while_a_turn_is_running():
+    async def scenario():
+        gate = asyncio.Event()
+        checkpoints = Checkpoints(saved=checkpoint({"plan_revision": 1}))
+        app, store = runtime(Workflow(gate=gate), checkpoints)
+        store.backfill("t", "user-1")
+        turn = asyncio.create_task(chat(app))
+        await asyncio.sleep(0)
+
+        with pytest.raises(SessionBusy):
+            await delete(app)
+
+        gate.set()
+        await turn
+        return checkpoints
+
+    assert asyncio.run(scenario()).deleted == []
 
 
 # ── Checkpointer ────────────────────────────────────────────────────

@@ -3,12 +3,12 @@ import {
   Plane, Map, Calendar, Compass, MessageSquare, Menu, Settings,
   User, Paperclip, Send, MapPin, Plus, History, Sunrise, ChevronRight, X,
   ShieldAlert, Phone, Building, Loader2, AlertTriangle,
-  Globe, Users, DollarSign, Search, Home, LogOut
+  Globe, Users, DollarSign, Search, Home, LogOut, Trash2
 } from 'lucide-react';
 import { useAuth } from './components/AuthGate';
 import {
   sendChatMessage, submitTripForm, submitProfile, getProfile,
-  getChatHistory, newSessionId, ApiError,
+  getChatHistory, deleteChatSession, newSessionId, ApiError,
   hasCompleteInitialSuccessSnapshot, hasCompleteLiveSuccessSnapshot,
   isChatBudgetConfirmation,
   isSafeAssistantContent,
@@ -835,10 +835,14 @@ const [historyLoaded, setHistoryLoaded] = useState(false);
   const [homeCountry, setHomeCountry] = useState<string>('');
   // In-memory view of Supabase history plus work created in the current tab.
   const [recentTrips, setRecentTrips] = useState<StoredSession[]>([]);
+  const [deletingTripId, setDeletingTripId] = useState<string | null>(null);
   const [pendingAssessments, setPendingAssessments] = useState<Record<string, PendingAssessment>>({});
   const [clock, setClock] = useState(Date.now());
   const initialHistoryHydratedRef = useRef(false);
   const restoringSessionRef = useRef<string | null>(null);
+  // Deleted this tab: a history response requested before the delete
+  // finished must not bring them back.
+  const deletedSessionIdsRef = useRef<Set<string>>(new Set());
   const sendInFlightRef = useRef(false);
   const sessionIdRef = useRef(sessionId);
   const requestTokenRef = useRef(0);
@@ -1060,7 +1064,7 @@ const [historyLoaded, setHistoryLoaded] = useState(false);
         if (!mounted) return;
         const remoteSessions = response.sessions
           .map(fromRemoteSession)
-          .filter((session) => session.id)
+          .filter((session) => session.id && !deletedSessionIdsRef.current.has(session.id))
           .sort((a, b) => b.updatedAt - a.updatedAt)
           .slice(0, MAX_STORED_SESSIONS);
         setRecentTrips(remoteSessions);
@@ -1151,6 +1155,37 @@ const [historyLoaded, setHistoryLoaded] = useState(false);
       : err instanceof Error
         ? err.message
         : 'Unknown error contacting the backend.';
+
+  // Permanently delete a conversation and everything the backend saved for it.
+  // Deleting the open conversation leaves an empty chat, like a fresh start.
+  const deleteTrip = async (trip: StoredSession) => {
+    if (deletingTripId) return;
+    const confirmed = window.confirm(
+      `Delete "${trip.title}"? Its chat and itinerary will be permanently removed.`,
+    );
+    if (!confirmed) return;
+
+    setDeletingTripId(trip.id);
+    try {
+      await deleteChatSession(trip.id);
+      deletedSessionIdsRef.current.add(trip.id);
+      setRecentTrips((prev) => prev.filter((s) => s.id !== trip.id));
+      setPendingAssessment(trip.id, null);
+      if (sessionIdRef.current === trip.id) {
+        restoringSessionRef.current = null;
+        setMessages(INITIAL_MESSAGES);
+        activateSession(newSessionId());
+        setDestination('');
+        setInput('');
+        setMode('chat');
+      }
+      setError(null);
+    } catch (err) {
+      setError(`Could not delete this trip: ${errText(err)}`);
+    } finally {
+      setDeletingTripId(null);
+    }
+  };
 
   // Core send routine. `promptText` is what the backend receives; `displayText`
   // (optional) is what the user sees — this lets us inject "hidden" prompts
@@ -1459,24 +1494,40 @@ const [historyLoaded, setHistoryLoaded] = useState(false);
           ) : (
             <div className="space-y-1">
               {recentTrips.map((trip) => (
-                <button
+                <div
                   key={trip.id}
-                  onClick={() => openTrip(trip)}
-                  className={`w-full flex items-center gap-3 px-2 py-2 text-sm rounded-md transition-colors text-left ${
+                  className={`group flex items-center rounded-md transition-colors ${
                     trip.id === sessionId
                       ? 'bg-blue-50 text-blue-700'
                       : 'text-slate-600 hover:bg-slate-100'
                   }`}
                 >
-                  <MessageSquare
-                    size={16}
-                    className={`shrink-0 ${trip.id === sessionId ? 'text-blue-500' : 'text-slate-400'}`}
-                  />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate">{trip.title}</span>
-                    <span className="block text-[11px] text-slate-400">{relativeDay(trip.updatedAt)}</span>
-                  </span>
-                </button>
+                  <button
+                    onClick={() => openTrip(trip)}
+                    className="flex min-w-0 flex-1 items-center gap-3 px-2 py-2 text-sm text-left"
+                  >
+                    <MessageSquare
+                      size={16}
+                      className={`shrink-0 ${trip.id === sessionId ? 'text-blue-500' : 'text-slate-400'}`}
+                    />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate">{trip.title}</span>
+                      <span className="block text-[11px] text-slate-400">{relativeDay(trip.updatedAt)}</span>
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => deleteTrip(trip)}
+                    disabled={deletingTripId !== null || (trip.id === sessionId && loading)}
+                    aria-label={`Delete ${trip.title}`}
+                    title="Delete trip"
+                    className="mr-1 shrink-0 rounded p-1.5 text-slate-400 transition hover:bg-red-50 hover:text-red-600 focus-visible:opacity-100 disabled:cursor-not-allowed disabled:opacity-40 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100"
+                  >
+                    {deletingTripId === trip.id
+                      ? <Loader2 size={14} className="animate-spin" />
+                      : <Trash2 size={14} />}
+                  </button>
+                </div>
               ))}
             </div>
           )}

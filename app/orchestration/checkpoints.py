@@ -207,9 +207,9 @@ class ResilientAsyncPostgresSaver(AsyncPostgresSaver):
 
     A pooler, the server or a NAT can drop a socket after the pool's
     checkout check, so a checkpoint write may hit ``OperationalError``.
-    Reads and writes are idempotent upserts keyed by checkpoint id, so a
-    retry on a fresh connection is safe. ``alist`` is not retried: a partly
-    consumed iterator can't be replayed safely.
+    Reads, writes (idempotent upserts keyed by checkpoint id) and thread
+    deletes are all safe to retry on a fresh connection. ``alist`` is not
+    retried: a partly consumed iterator can't be replayed safely.
     """
 
     retry_attempts: int = 3
@@ -223,6 +223,9 @@ class ResilientAsyncPostgresSaver(AsyncPostgresSaver):
 
     async def aput_writes(self, config: Any, writes: Any, task_id: str, task_path: str = "") -> None:
         await self._retry(super().aput_writes, config, writes, task_id, task_path)
+
+    async def adelete_thread(self, thread_id: str) -> None:
+        await self._retry(super().adelete_thread, thread_id)
 
     async def _retry(self, operation: Any, *args: Any) -> Any:
         delay = self.retry_base_delay_seconds

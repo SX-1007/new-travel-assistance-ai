@@ -3,7 +3,8 @@
 POST /message runs one turn through ``GraphRuntime.invoke_chat``, which
 allows one turn per session at a time (a second one is answered 409) and
 checks ownership. GET /history lists the user's sessions from their latest
-checkpoints. Exceptions map to HTTP statuses in ``api/errors.py``.
+checkpoints; DELETE /history/{id} removes one session's checkpoints and
+ownership row. Exceptions map to HTTP statuses in ``api/errors.py``.
 """
 
 from __future__ import annotations
@@ -11,12 +12,18 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from fastapi import APIRouter, Query, Response
+from fastapi import APIRouter, Path, Query, Response
 
 from app.api.dependencies import CurrentUser, RequestId
 from app.api.presenters.chat import ChatTurnResponse, chat_turn_response, history_session
 from app.api.providers import ChatHistoryLoader, HistoryLoader, Reviewer, Runtime
-from app.api.schemas.chat import ChatHistoryResponse, ChatHistorySession, ChatRequest, ChatResponse
+from app.api.schemas.chat import (
+    MAX_ID_LENGTH,
+    ChatHistoryResponse,
+    ChatHistorySession,
+    ChatRequest,
+    ChatResponse,
+)
 from app.modules.output_review.service import OutputReviewService
 from app.shared.observability import LogContext, log_event
 
@@ -76,6 +83,21 @@ async def get_chat_history(
 
     sessions = await asyncio.to_thread(_load_sessions, load, reviewer, user_id, limit)
     return ChatHistoryResponse(sessions=sessions)
+
+
+@router.delete(
+    "/history/{session_id}",
+    status_code=204,
+    summary="Delete one of the current user's chat sessions and everything saved for it",
+)
+async def delete_chat_session(
+    user_id: CurrentUser,
+    request_id: RequestId,
+    runtime: Runtime,
+    session_id: str = Path(min_length=1, max_length=MAX_ID_LENGTH),
+) -> Response:
+    await runtime.delete_session(session_id, user_id=user_id, request_id=request_id)
+    return Response(status_code=204)
 
 
 def _load_sessions(

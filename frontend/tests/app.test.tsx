@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 const apiMocks = vi.hoisted(() => ({
   getProfile: vi.fn(),
   getChatHistory: vi.fn(),
+  deleteChatSession: vi.fn(),
   submitProfile: vi.fn(),
   sendChatMessage: vi.fn(),
   submitTripForm: vi.fn(),
@@ -264,6 +265,77 @@ describe('App end-to-end component flows', () => {
     expect(apiMocks.getChatHistory).toHaveBeenCalledWith(10);
   });
 
+  it('deletes a saved trip after confirmation and clears it when it was open', async () => {
+    apiMocks.getProfile.mockResolvedValue({
+      status: 'success', onboarded: true, profile: { home_country: 'Malaysia' },
+    });
+    apiMocks.getChatHistory.mockResolvedValue({
+      status: 'success',
+      sessions: [
+        {
+          id: 'tokyo-session',
+          title: 'Tokyo trip',
+          destination: 'Tokyo, Japan',
+          updated_at: '2026-08-16T08:00:00+00:00',
+          messages: [{ role: 'ai', content: 'Saved Tokyo plan' }],
+        },
+        {
+          id: 'seoul-session',
+          title: 'Seoul trip',
+          destination: 'Seoul, South Korea',
+          updated_at: '2026-08-15T08:00:00+00:00',
+          messages: [{ role: 'ai', content: 'Saved Seoul plan' }],
+        },
+      ],
+    });
+    apiMocks.deleteChatSession.mockResolvedValue(undefined);
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValue(true);
+
+    render(<App />);
+    expect(await screen.findByText('Saved Tokyo plan')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Tokyo trip' }));
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(apiMocks.deleteChatSession).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Tokyo trip' }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: /^Tokyo trip/ })).not.toBeInTheDocument());
+    expect(apiMocks.deleteChatSession).toHaveBeenCalledWith('tokyo-session');
+    expect(screen.queryByText('Saved Tokyo plan')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Seoul trip/ })).toBeInTheDocument();
+
+    // A history refresh that still lists the deleted trip doesn't bring it back.
+    passFocusRevalidationCooldown();
+    fireEvent.focus(window);
+    await waitFor(() => expect(apiMocks.getChatHistory).toHaveBeenCalledTimes(2));
+    expect(screen.queryByRole('button', { name: /^Tokyo trip/ })).not.toBeInTheDocument();
+  });
+
+  it('keeps a saved trip and shows the error when its delete fails', async () => {
+    apiMocks.getProfile.mockResolvedValue({
+      status: 'success', onboarded: true, profile: { home_country: 'Malaysia' },
+    });
+    apiMocks.getChatHistory.mockResolvedValue({
+      status: 'success',
+      sessions: [{
+        id: 'tokyo-session',
+        title: 'Tokyo trip',
+        destination: 'Tokyo, Japan',
+        updated_at: '2026-08-16T08:00:00+00:00',
+        messages: [{ role: 'ai', content: 'Saved Tokyo plan' }],
+      }],
+    });
+    apiMocks.deleteChatSession.mockRejectedValue(new Error('database unavailable'));
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete Tokyo trip' }));
+
+    expect(await screen.findByText(/Could not delete this trip: database unavailable/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Tokyo trip/ })).toBeInTheDocument();
+    expect(screen.getByText('Saved Tokyo plan')).toBeInTheDocument();
+  });
+
   it.each([
     '{"draft_itinerary":[{"day":1}]}',
     'Before {"candidate_plan":{"country":"Malaysia"}} after',
@@ -522,17 +594,17 @@ describe('App end-to-end component flows', () => {
     let canvas = await screen.findByRole('complementary', { name: 'Latest itinerary' });
     expect(within(canvas).getByText('Tokyo Hotel')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: /Kyoto trip/ }));
+    fireEvent.click(screen.getByRole('button', { name: /^Kyoto trip/ }));
     canvas = await screen.findByRole('complementary', { name: 'Latest itinerary' });
     expect(within(canvas).getByText('Kyoto Hotel')).toBeInTheDocument();
     expect(within(canvas).queryByText('Tokyo Hotel')).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: /Seoul questions/ }));
+    fireEvent.click(screen.getByRole('button', { name: /^Seoul questions/ }));
     expect(await screen.findByText('Seoul has no itinerary yet.')).toBeInTheDocument();
     expect(screen.queryByRole('complementary', { name: 'Latest itinerary' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Open latest itinerary' })).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: /Tokyo trip/ }));
+    fireEvent.click(screen.getByRole('button', { name: /^Tokyo trip/ }));
     canvas = await screen.findByRole('complementary', { name: 'Latest itinerary' });
     expect(within(canvas).getByText('Tokyo Hotel')).toBeInTheDocument();
     expect(within(canvas).queryByText('Kyoto Hotel')).not.toBeInTheDocument();
@@ -790,7 +862,7 @@ describe('App end-to-end component flows', () => {
     });
 
     expect(screen.getByPlaceholderText('e.g. Japan')).toHaveValue('South Korea');
-    expect(screen.getByRole('button', { name: /Taiwan/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Taiwan/ })).toBeInTheDocument();
     expect(screen.queryByText('Saved Taiwan plan')).not.toBeInTheDocument();
   });
 
@@ -828,7 +900,7 @@ describe('App end-to-end component flows', () => {
     });
 
     expect(screen.getByPlaceholderText('e.g. Japan')).toHaveValue('New Zealand');
-    expect(screen.getByRole('button', { name: /Japan/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Japan/ })).toBeInTheDocument();
     expect(screen.queryByText(/No cached history was loaded/)).not.toBeInTheDocument();
   });
 
@@ -1766,7 +1838,7 @@ describe('App end-to-end component flows', () => {
       }
       await waitFor(() => expect(screen.queryByText('Planning your trip…')).not.toBeInTheDocument());
       fireEvent.click(screen.getByRole('button', { name: 'New Trip' }));
-      fireEvent.click(screen.getByRole('button', { name: /Round trip/ }));
+      fireEvent.click(screen.getByRole('button', { name: /^Round trip/ }));
       const reopened = await screen.findByRole('region', { name: 'Chat budget confirmation' });
       const button = within(reopened).getByRole('button', { name: 'Use recommended budget' });
       expect(button).toBeDisabled();
@@ -1882,7 +1954,7 @@ describe('App end-to-end component flows', () => {
       fireEvent.click(screen.getByRole('button', { name: /Generate itinerary/ }));
       await waitFor(() => expect(apiMocks.submitTripForm).toHaveBeenCalledTimes(1));
 
-      fireEvent.click(screen.getByRole('button', { name: /Saved trip/ }));
+      fireEvent.click(screen.getByRole('button', { name: /^Saved trip/ }));
       const input = await screen.findByPlaceholderText('Ask about destinations, flights, or itineraries...');
       fireEvent.change(input, { target: { value: 'Newer chat request' } });
       fireEvent.submit(input.closest('form')!);

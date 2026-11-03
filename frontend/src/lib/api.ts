@@ -719,6 +719,11 @@ async function get(path: string, timeoutMs: number = DEFAULT_TIMEOUT_MS): Promis
   return parseResponse(res, path);
 }
 
+async function del(path: string, timeoutMs: number = DEFAULT_TIMEOUT_MS): Promise<unknown> {
+  const res = await sendAuthorized(path, (auth) => ({ method: 'DELETE', headers: auth }), timeoutMs);
+  return parseResponse(res, path);
+}
+
 // ── Public API ──────────────────────────────────────────────────────
 
 /** Persist the one-time onboarding profile (Name / Origin). */
@@ -1561,6 +1566,20 @@ export function getChatHistory(limit: number = 10): Promise<ChatHistoryResponse>
     }
     return value;
   });
+}
+
+/**
+ * Permanently delete one saved conversation and everything the backend stored
+ * for it. A 404 means it is already gone (or was never saved), which callers
+ * treat the same as a successful delete.
+ */
+export async function deleteChatSession(sessionId: string): Promise<void> {
+  try {
+    await del(`/api/chat/history/${encodeURIComponent(sessionId)}`);
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) return;
+    throw error;
+  }
 }
 
 /** Check budget first; only a successful result contains an itinerary/session. */

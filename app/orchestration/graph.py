@@ -9,7 +9,8 @@
                → execute_validated_transaction … | budget_gate_response
 
 ``build_graph`` only wires nodes it is given; ``GraphRuntime`` checks session
-ownership, runs one turn under a time limit and returns a ``TurnResult``.
+ownership, runs one turn under a time limit and returns a ``TurnResult``, and
+deletes a session with everything saved for it.
 Nothing here builds clients or reads settings: ``bootstrap/container.py``
 assembles the services, the checkpointer and the runtime.
 """
@@ -116,10 +117,12 @@ def compile_graph(
 # ── Runtime ─────────────────────────────────────────────────────────
 
 
-class CheckpointReader(Protocol):
+class CheckpointStore(Protocol):
     async def aget_tuple(self, config: Any) -> Any: ...
 
     def alist(self, config: Any, *, limit: int | None = None) -> Any: ...
+
+    async def adelete_thread(self, thread_id: str) -> None: ...
 
 
 class Workflow(Protocol):
@@ -141,7 +144,7 @@ class GraphRuntime:
         self,
         *,
         workflow: Workflow,
-        checkpointer: CheckpointReader,
+        checkpointer: CheckpointStore,
         sessions: SessionAccessService,
         chat_timeout: float = CHAT_TIMEOUT_SECONDS,
         new_trip_timeout: float = NEW_TRIP_TIMEOUT_SECONDS,
@@ -258,6 +261,38 @@ class GraphRuntime:
             state = await self._run(turn_input, config, self._chat_timeout)
 
         return TurnResult(state=state, plan_changed=_revision(state) > _revision(before))
+
+    # ── Delete ──────────────────────────────────────────────────────
+
+    async def delete_session(self, thread_id: str, *, user_id: str, request_id: str | None = None) -> None:
+        """Delete a session this user owns: every checkpoint, then the ownership row.
+
+        Holds the session's turn lock, so a running turn (409) can't write a
+        checkpoint after the delete. Checkpoints go first: if the ownership
+        delete then fails, a retry still passes the owner check and finishes.
+        """
+
+        _require_id(thread_id, "thread_id")
+        _require_id(user_id, "user_id")
+        log_context = LogContext(request_id=request_id, session_id=thread_id)
+
+        async with self._turn(thread_id):
+            verified, existing = await asyncio.gather(
+                self._sessions.verify_session_owner(thread_id, user_id),
+                self._checkpointer.aget_tuple(_thread(thread_id)),
+            )
+
+            if not verified:
+                if existing is None:
+                    raise SessionAccessDenied
+
+                await self._adopt_legacy_owner(existing, thread_id, user_id)
+
+            await self._checkpointer.adelete_thread(thread_id)
+            await self._sessions.delete_session_owner(thread_id, user_id)
+            self._history_scanned.pop(thread_id, None)
+
+        log_event(logger, "session.delete", context=log_context, stage="storage", outcome="completed")
 
     # ── Lifecycle ───────────────────────────────────────────────────
 

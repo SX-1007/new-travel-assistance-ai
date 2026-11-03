@@ -135,6 +135,24 @@ describe('frontend API client', () => {
     );
   });
 
+  it('deletes one saved conversation and treats an already-gone one as deleted', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ detail: 'Trip session not found.' }), { status: 404 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ detail: 'busy' }), { status: 409 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const api = await loadApi();
+
+    await expect(api.deleteChatSession('session 1/x')).resolves.toBeUndefined();
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('http://api.test/api/chat/history/session%201%2Fx');
+    expect(init.method).toBe('DELETE');
+    expect(init.headers).toEqual(AUTH);
+
+    await expect(api.deleteChatSession('gone')).resolves.toBeUndefined();
+    await expect(api.deleteChatSession('busy')).rejects.toMatchObject({ status: 409 });
+  });
+
   it('posts the exact chat contract', async () => {
     const response = {
       status: 'budget_check_unavailable',

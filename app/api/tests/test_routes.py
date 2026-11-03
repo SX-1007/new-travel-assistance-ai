@@ -127,6 +127,9 @@ class World:
     def history(self):
         return self.client.get("/api/chat/history", headers=USER)
 
+    def delete(self, session_id, headers=USER):
+        return self.client.delete(f"/api/chat/history/{session_id}", headers=headers)
+
 
 class StubRuntime:
     def __init__(self, error):
@@ -312,3 +315,20 @@ def test_history_restores_messages_and_attaches_the_current_plan_once():
     assert set(with_plan[0]) == {"role", "content", "itinerary", "maps", "budget", "destination_country_code"}
     assert with_plan[0]["budget"]["currency"] == "JPY"
     assert all(set(message) == {"role", "content"} for message in restored["messages"][:-1])
+
+
+def test_deleting_a_session_removes_its_checkpoints_and_ownership():
+    world, session = planned_world()
+
+    assert world.delete(session, headers={"Authorization": "Bearer someone-else"}).status_code == 404
+    assert world.delete("x" * 129).status_code == 422
+    assert world.delete(session, headers={}).status_code == 401
+
+    response = world.delete(session)
+
+    assert response.status_code == 204 and response.content == b""
+    assert world.app.saver.get_tuple({"configurable": {"thread_id": session}}) is None
+    assert session not in world.app.store.rows
+    assert world.history().json()["sessions"] == []
+    assert world.say(session, "hi").status_code == 404
+    assert world.delete(session).status_code == 404

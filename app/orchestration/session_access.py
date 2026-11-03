@@ -34,6 +34,8 @@ class SessionOwnershipStore(Protocol):
 
     def backfill(self, session_id: str, user_id: str) -> bool: ...
 
+    def delete(self, session_id: str, user_id: str) -> bool: ...
+
     def verify(self, session_id: str, user_id: str) -> bool: ...
 
 
@@ -121,6 +123,17 @@ class SessionAccessService:
     ) -> bool:
         return await asyncio.to_thread(
             self._store.backfill,
+            session_id,
+            user_id,
+        )
+
+    async def delete_session_owner(
+        self,
+        session_id: str,
+        user_id: str,
+    ) -> bool:
+        return await asyncio.to_thread(
+            self._store.delete,
             session_id,
             user_id,
         )
