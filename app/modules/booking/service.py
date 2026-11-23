@@ -42,6 +42,7 @@ from app.modules.booking.selection import (
     pick_flight_pair,
     pick_hotel,
 )
+from app.shared.exceptions import ProviderQuotaExhausted
 from app.shared.logging import safe_log
 
 
@@ -49,16 +50,29 @@ logger = logging.getLogger(__name__)
 
 ALTERNATIVES_LIMIT = 3
 
+# Model-facing: the tool result tells the agent why there are no options.
+QUOTA_EXHAUSTED_ERROR = (
+    "Live flight and hotel prices are used up for now, so no alternatives can be "
+    "searched. Tell the user to try again later; retrying now won't help."
+)
+
 Leg = Literal["outbound", "return"]
 
 _T = TypeVar("_T")
 
 
 def _safe_results(call: Callable[[], list[_T]], event: str) -> list[_T]:
-    """One provider failure must not erase the other searches' results."""
+    """One provider failure must not erase the other searches' results.
+
+    A used-up provider quota is re-raised, never read as "no results".
+    """
 
     try:
         return list(call() or [])
+
+    except ProviderQuotaExhausted:
+        safe_log(logger, logging.WARNING, "booking.provider_quota_exhausted")
+        raise
 
     except Exception:
         safe_log(logger, logging.WARNING, event)
@@ -335,10 +349,13 @@ class BookingPlanningService:
         if cap is not None and kept:
             cap = max(cap - kept[0].price, 0.0)
 
-        options = _safe_results(
-            lambda: self._search_leg(trip, outbound=outbound),
-            "booking.alternative_flight_failed",
-        )
+        try:
+            options = _safe_results(
+                lambda: self._search_leg(trip, outbound=outbound),
+                "booking.alternative_flight_failed",
+            )
+        except ProviderQuotaExhausted:
+            return {"error": QUOTA_EXHAUSTED_ERROR}
 
         found, within_budget = alternatives(
             options,
@@ -385,10 +402,13 @@ class BookingPlanningService:
         )
         cap = nightly_cap(trip.accommodation_budget, nights)
 
-        options = _safe_results(
-            lambda: self._search_hotels(trip, check_in=check_in),
-            "booking.alternative_hotel_failed",
-        )
+        try:
+            options = _safe_results(
+                lambda: self._search_hotels(trip, check_in=check_in),
+                "booking.alternative_hotel_failed",
+            )
+        except ProviderQuotaExhausted:
+            return {"error": QUOTA_EXHAUSTED_ERROR}
 
         found, within_budget = alternatives(
             options,

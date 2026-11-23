@@ -45,6 +45,8 @@ from app.orchestration.nodes.replies import (
     BUDGET_CONFIRMATION_TEXT,
     BUDGET_GATE,
     BUDGET_UNAVAILABLE_TEXT,
+    QUOTA_BUDGET_TEXT,
+    QUOTA_EXHAUSTED_REASON,
     server_reply,
 )
 from app.orchestration.nodes.transaction import committed_overrides, planning_reset, transaction_view
@@ -189,11 +191,13 @@ async def budget_gate_response_node(
     ``pending_budget_confirmation``.
     """
 
-    text = (
-        BUDGET_CONFIRMATION_TEXT
-        if state.budget_gate_outcome == "budget_confirmation_required"
-        else BUDGET_UNAVAILABLE_TEXT
-    )
+    if state.budget_gate_outcome == "budget_confirmation_required":
+        text = BUDGET_CONFIRMATION_TEXT
+    elif state.budget_gate_reason == QUOTA_EXHAUSTED_REASON:
+        text = QUOTA_BUDGET_TEXT
+    else:
+        text = BUDGET_UNAVAILABLE_TEXT
+
     message = server_reply(
         state,
         text,

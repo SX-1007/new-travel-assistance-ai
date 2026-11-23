@@ -3,6 +3,11 @@
 The intake (profile origin, verified cities, budget gate) decides whether
 planning may start; only then is a session id created and the graph run.
 Exceptions from the graph are mapped to HTTP statuses in ``api/errors.py``.
+
+Limits (``api/request_limits.py``): every submission counts against the
+form limit, and one that starts planning also against the plan limit. A
+user may have one submission running at a time, and the server plans at
+most a few trips at once.
 """
 
 from __future__ import annotations
@@ -10,19 +15,21 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 
-from app.api.dependencies import CurrentUser, RequestId
+from app.api.dependencies import RequestId, rate_limited
 from app.api.presenters.budget import form_confirmation
 from app.api.presenters.plan import (
-    PLANNING_UNAVAILABLE_MESSAGE,
     AcceptedPlan,
     accepted_plan,
+    planning_unavailable_message,
     planning_unavailable_reason,
     promoted_reply,
 )
-from app.api.providers import Runtime, TripIntake
+from app.api.providers import Limits, Runtime, Slots, TripIntake
+from app.api.request_limits import FORM_SUBMITS, PLANS
 from app.api.schemas.budget import BudgetCheckUnavailableResponse
 from app.api.schemas.common import PlanningUnavailableResponse
 from app.api.schemas.trip import (
@@ -47,6 +54,10 @@ _UNAVAILABLE_REPLIES = {
     "provider_data_unavailable": (
         "Current flight, hotel, or exchange-rate data is unavailable. Retry the budget check before planning."
     ),
+    "provider_quota_exhausted": (
+        "Live flight and hotel prices are used up for now, so the budget can't be checked yet. "
+        "Retrying right away won't help; please try again later."
+    ),
     "assessment_cache_unavailable": (
         "The grounded prices could not be saved for confirmation. Retry the budget check before planning."
     ),
@@ -67,10 +78,25 @@ _UNAVAILABLE_REPLIES = {
 )
 async def submit_trip_form(
     form: InitialFormRequest,
-    user_id: CurrentUser,
+    user_id: Annotated[str, Depends(rate_limited(FORM_SUBMITS))],
     request_id: RequestId,
     intake: TripIntake,
     runtime: Runtime,
+    limits: Limits,
+    slots: Slots,
+) -> TripSubmissionResponse:
+    async with slots.for_user(user_id):
+        return await _submit(form, user_id, request_id, intake, runtime, limits, slots)
+
+
+async def _submit(
+    form: InitialFormRequest,
+    user_id: str,
+    request_id: str,
+    intake: TripIntake,
+    runtime: Runtime,
+    limits: Limits,
+    slots: Slots,
 ) -> TripSubmissionResponse:
     log_context = LogContext(request_id=request_id)
 
@@ -108,17 +134,22 @@ async def submit_trip_form(
     if isinstance(outcome, BudgetConfirmationRequired):
         return form_confirmation(outcome)
 
-    # The budget covers the minimum: only now does a session exist.
-    session_id = str(uuid.uuid4())
-    log_context = LogContext(request_id=request_id, session_id=session_id)
-    log_event(logger, "form.submit", context=log_context, stage="form", outcome="started")
+    # The budget covers the minimum: only now does a session exist. A free
+    # planning slot is taken before the plan limit is counted, so a busy
+    # server doesn't use up one of the user's plans.
+    async with slots.planning():
+        await asyncio.to_thread(limits.check, PLANS, user_id)
 
-    result = await runtime.invoke_new_trip(
-        outcome.initial_state,
-        thread_id=session_id,
-        user_id=user_id,
-        request_id=request_id,
-    )
+        session_id = str(uuid.uuid4())
+        log_context = LogContext(request_id=request_id, session_id=session_id)
+        log_event(logger, "form.submit", context=log_context, stage="form", outcome="started")
+
+        result = await runtime.invoke_new_trip(
+            outcome.initial_state,
+            thread_id=session_id,
+            user_id=user_id,
+            request_id=request_id,
+        )
     state = result.state
     plan: AcceptedPlan | None = None
     reply: str | None = None
@@ -136,10 +167,11 @@ async def submit_trip_form(
             outcome="unavailable",
             issue_codes=["planning.unavailable"],
         )
+        reason = planning_unavailable_reason(state)
         return PlanningUnavailableResponse(
             status="planning_unavailable",
-            reason=planning_unavailable_reason(state),
-            chat_reply=PLANNING_UNAVAILABLE_MESSAGE,
+            reason=reason,
+            chat_reply=planning_unavailable_message(reason),
         )
 
     log_event(

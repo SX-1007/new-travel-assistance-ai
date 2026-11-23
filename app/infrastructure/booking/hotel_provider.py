@@ -13,7 +13,7 @@ from urllib.parse import quote_plus, urlsplit
 
 from pydantic import ValidationError
 
-from app.infrastructure.search.serpapi import SerpApiUnavailableError
+from app.infrastructure.search.serpapi import SerpApiQuotaExhausted, SerpApiUnavailableError
 from app.modules.booking.hotels import (
     calculate_total_nights,
     filter_hotels_by_budget,
@@ -122,6 +122,9 @@ class SerpApiHotelProvider:
             }
             try:
                 payload = self._client.search(params)
+            except SerpApiQuotaExhausted:
+                # Not "no hotels": the caller must say prices are used up.
+                raise
             except SerpApiUnavailableError:
                 return []
             if not isinstance(payload, dict) or payload.get("error"):

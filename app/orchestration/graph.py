@@ -259,6 +259,7 @@ class GraphRuntime:
                 turn_input["itinerary_history"] = history
 
             state = await self._run(turn_input, config, self._chat_timeout)
+            await self._touch(thread_id, user_id, log_context)
 
         return TurnResult(state=state, plan_changed=_revision(state) > _revision(before))
 
@@ -329,6 +330,22 @@ class GraphRuntime:
         # 504) instead of freezing the request.
         result = await asyncio.wait_for(self._workflow.ainvoke(turn_input, config=config), timeout=timeout)
         return dict(result) if isinstance(result, Mapping) else {}
+
+    async def _touch(self, thread_id: str, user_id: str, log_context: LogContext) -> None:
+        """Move the session to the top of chat history; a failure only
+        leaves its place in the list stale, never fails the turn."""
+
+        try:
+            await self._sessions.touch_session(thread_id, user_id)
+        except Exception:
+            log_event(
+                logger,
+                "session.touch",
+                context=log_context,
+                stage="storage",
+                outcome="failed",
+                issue_codes=["session.touch_failed"],
+            )
 
     async def _reserve(self, thread_id: str, user_id: str) -> None:
         if await self._sessions.reserve_new_session(thread_id, user_id):

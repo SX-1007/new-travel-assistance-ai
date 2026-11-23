@@ -19,7 +19,7 @@ from app.modules.budget.assessment import (
     is_budget_sufficient,
     parse_assessment,
 )
-from app.modules.budget.exceptions import BudgetAssessmentUnavailable
+from app.modules.budget.exceptions import BudgetAssessmentUnavailable, BudgetProviderQuotaExhausted
 from app.modules.budget.models import BudgetAssessment, BudgetTrip
 from app.modules.budget.service import BudgetAssessmentService
 
@@ -280,6 +280,8 @@ def evaluate_chat_budget(
     if assessment is None:
         try:
             result = assessment_service.get_or_create(trip)
+        except BudgetProviderQuotaExhausted:
+            return _unavailable("provider_quota_exhausted")
         except (BudgetAssessmentUnavailable, ValidationError):
             return _unavailable("provider_data_unavailable")
         assessment = result.assessment

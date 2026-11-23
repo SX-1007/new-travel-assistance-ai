@@ -16,9 +16,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from concurrent.futures import ThreadPoolExecutor
 
 from functools import lru_cache, partial
-from typing import Any
+from typing import Any, Final
 
 from langchain_core.rate_limiters import BaseRateLimiter
 from langchain_core.runnables import Runnable
@@ -62,6 +63,8 @@ from app.infrastructure.cache.upstash import (
 from app.infrastructure.database.checkpoint_pool import (
     open_checkpoint_pool,
 )
+from app.infrastructure.ratelimit.upstash_limiter import UpstashFixedWindowLimiter
+from app.api.request_limits import PlanSlots, RequestLimits
 from app.infrastructure.database.postgres import (
     close_connection_pool,
     init_connection_pool,
@@ -123,6 +126,7 @@ from app.infrastructure.search.exa import (
 )
 from app.infrastructure.search.serpapi import (
     SerpApiClient,
+    SerpApiKeyHealth,
 )
 from app.infrastructure.vector.semantic_preferences import (
     PgVectorSemanticPreferenceStore,
@@ -202,6 +206,11 @@ from app.modules.identity.ports import IdentityTokenVerifierPort
 from app.modules.profile.service import OnboardingService
 
 logger = logging.getLogger(__name__)
+
+# Trips this process plans at once (more wait for a slot: 503); the planning
+# thread pool has one more thread, for a chat re-plan.
+MAX_PLANS_RUNNING: Final = 2
+PLANNING_THREADS: Final = MAX_PLANS_RUNNING + 1
 
 
 def _settings() -> Settings:
@@ -304,6 +313,45 @@ def _new_cache_store() -> RedisCacheStore:
     return RedisCacheStore(client=UpstashRestClient(url=url, token=token))
 
 
+# ── Request limits ──────────────────────────────────────────────────
+
+
+@lru_cache(maxsize=1)
+def get_rate_limit_counter() -> UpstashFixedWindowLimiter | None:
+    """Per-user request counters in Upstash, with their own client and
+    session; None (limits off) without the Upstash settings, which
+    production refuses at start-up."""
+
+    settings = _settings()
+    url = settings.UPSTASH_REDIS_REST_URL.strip()
+    token = settings.UPSTASH_REDIS_REST_TOKEN.strip()
+
+    if not url or not token:
+        logger.warning("Request limits are off: UPSTASH_REDIS_REST_URL or UPSTASH_REDIS_REST_TOKEN is not set.")
+        return None
+
+    return UpstashFixedWindowLimiter(client=UpstashRestClient(url=url, token=token))
+
+
+@lru_cache(maxsize=1)
+def get_request_limits() -> RequestLimits:
+    return RequestLimits(get_rate_limit_counter(), fail_closed=_settings().is_production)
+
+
+@lru_cache(maxsize=1)
+def get_plan_slots() -> PlanSlots:
+    return PlanSlots(max_running=MAX_PLANS_RUNNING)
+
+
+@lru_cache(maxsize=1)
+def get_planning_executor() -> ThreadPoolExecutor:
+    """Planning's own small pool: each plan holds a thread for minutes,
+    which must never starve the shared pool (health checks, profile
+    reads, memory extraction)."""
+
+    return ThreadPoolExecutor(max_workers=PLANNING_THREADS, thread_name_prefix="planning")
+
+
 # One store per user of the cache, so one feature's cache traffic or
 # failures never hold up another's. Flights and hotels share no session,
 # and chat pins share none with planning (as with their SerpAPI clients).
@@ -338,12 +386,15 @@ def get_user_profile_store() -> PostgresUserProfileStore:
 
 
 @lru_cache(maxsize=1)
-def get_session_access_service() -> SessionAccessService:
-    repository = SessionOwnershipRepository()
+def get_session_ownership_repository() -> SessionOwnershipRepository:
+    """Session owners: access checks, and the chat-history index."""
 
-    return SessionAccessService(
-        store=repository,
-    )
+    return SessionOwnershipRepository()
+
+
+@lru_cache(maxsize=1)
+def get_session_access_service() -> SessionAccessService:
+    return SessionAccessService(store=get_session_ownership_repository())
 
 
 # ── Embeddings / vector stores ──────────────────────────────────────
@@ -445,22 +496,34 @@ def get_mapbox_directions_client(
     )
 
 
+@lru_cache(maxsize=None)
+def get_serpapi_key_health(api_key: str) -> SerpApiKeyHealth:
+    """One cooldown record per SerpAPI key, shared by every client of it:
+    when an account's searches run out, they run out for all of them."""
+
+    del api_key  # the cache key only
+    return SerpApiKeyHealth()
+
+
+def _serpapi_client(api_key: str) -> SerpApiClient:
+    """A client with its own HTTP session and its key's shared cooldown."""
+
+    return SerpApiClient(api_key=api_key, health=get_serpapi_key_health(api_key.strip()))
+
+
 @lru_cache(maxsize=1)
-def get_flight_search_client(
-) -> SerpApiClient:
-    return SerpApiClient(
-        api_key=_settings().SERPAPI_FLIGHT,
-    )
+def get_flight_search_client() -> SerpApiClient:
+    return _serpapi_client(_settings().SERPAPI_FLIGHT)
 
 
 @lru_cache(maxsize=1)
 def get_hotel_search_client() -> SerpApiClient:
-    return SerpApiClient(api_key=_settings().SERPAPI_HOTEL)
+    return _serpapi_client(_settings().SERPAPI_HOTEL)
 
 
 @lru_cache(maxsize=1)
 def get_place_search_client() -> SerpApiClient:
-    return SerpApiClient(api_key=_settings().SERPAPI_PLACE)
+    return _serpapi_client(_settings().SERPAPI_PLACE)
 
 
 @lru_cache(maxsize=1)
@@ -576,7 +639,7 @@ def get_pin_search_client() -> SerpApiClient:
     """Own client and HTTP session for chat map pins (same credential as
     place search), so pin traffic never shares a session with planning."""
 
-    return SerpApiClient(api_key=_settings().SERPAPI_PLACE)
+    return _serpapi_client(_settings().SERPAPI_PLACE)
 
 
 @lru_cache(maxsize=1)
@@ -690,6 +753,10 @@ def get_identity_verifier() -> IdentityTokenVerifierPort:
     """Firebase ID-token checks, or the development stand-in when enabled."""
 
     if _settings().AUTH_INSECURE_DEV_TOKENS:
+        if _settings().is_production:
+            # Also checked at start-up; this one guards any other caller.
+            raise RuntimeError("AUTH_INSECURE_DEV_TOKENS must be off in production.")
+
         logger.warning(
             "AUTH_INSECURE_DEV_TOKENS is on: bearer tokens are trusted as user ids "
             "without any check. Use it for local development only."
@@ -716,9 +783,28 @@ def get_new_trip_intake() -> NewTripIntake:
 # ── Lifecycle ───────────────────────────────────────────────────────
 
 
+def check_deployment_settings(settings: Settings) -> None:
+    """Refuse to start production with settings only fit for development."""
+
+    if not settings.is_production:
+        return
+
+    problems = []
+
+    if settings.AUTH_INSECURE_DEV_TOKENS:
+        problems.append("AUTH_INSECURE_DEV_TOKENS must be off (anyone could act as any user)")
+
+    if not (settings.UPSTASH_REDIS_REST_URL.strip() and settings.UPSTASH_REDIS_REST_TOKEN.strip()):
+        problems.append("UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN are required (request limits)")
+
+    if problems:
+        raise RuntimeError("Refusing to start in production: " + "; ".join(problems) + ".")
+
+
 def init_resources() -> None:
     """Open storage and create schemas at application startup."""
 
+    check_deployment_settings(_settings())
     init_connection_pool(_settings().DATABASE_URL)
     # Built now so a development-mode warning appears at start-up.
     get_identity_verifier()
@@ -726,6 +812,18 @@ def init_resources() -> None:
     get_user_profile_store().ensure_schema()
     get_travel_option_store().ensure_schema()
     get_semantic_preference_store().ensure_schema()
+
+    ownership = get_session_ownership_repository()
+    ownership.ensure_schema()
+
+    try:
+        # Once ever (recorded in the database): older sessions get the
+        # ownership row chat history now lists them by.
+        ownership.backfill_history()
+    except Exception:
+        # Not fatal: older sessions stay out of the list until the next
+        # start-up tries again; everything else works.
+        logger.exception("Chat-history backfill failed; it will be retried at the next start-up.")
 
 
 def verify_resources() -> dict[str, bool]:
@@ -771,7 +869,7 @@ def get_factual_search_client() -> SerpApiClient:
     """Own SerpAPI client and session for web evidence, even when the key
     falls back to the place-search key."""
 
-    return SerpApiClient(api_key=_settings().effective_factual_serpapi_key)
+    return _serpapi_client(_settings().effective_factual_serpapi_key)
 
 
 @lru_cache(maxsize=1)
@@ -901,6 +999,7 @@ def get_graph_services() -> GraphServices:
             routes=routes,
             currency=get_currency_provider(),
             budget=get_budget_assessment_service(),
+            executor=get_planning_executor(),
         ),
         replies=ReplyServices(reviewer=reviewer, writer=chat_model),
         models=AgentModels.bind(chat_model, get_agent_toolset()),
@@ -992,6 +1091,10 @@ async def shutdown_graph() -> None:
 # Every cached getter, dependents before what they use. A new getter must be
 # added here, or shutdown won't release it.
 _ALL_GETTERS = (
+    get_planning_executor,
+    get_request_limits,
+    get_rate_limit_counter,
+    get_plan_slots,
     get_gemini_rate_limiter,
     get_openrouter_rate_limiter,
     get_backend_health,
@@ -1030,6 +1133,7 @@ _ALL_GETTERS = (
     get_flight_search_client,
     get_hotel_search_client,
     get_place_search_client,
+    get_serpapi_key_health,
     get_mapbox_directions_client,
     get_mapbox_forward_geocoder,
     get_mapbox_reverse_geocoder,
@@ -1040,6 +1144,7 @@ _ALL_GETTERS = (
     get_travel_option_store,
     get_embedder,
     get_session_access_service,
+    get_session_ownership_repository,
     get_user_profile_store,
     get_flight_cache_store,
     get_hotel_cache_store,
@@ -1069,6 +1174,7 @@ def shutdown_container() -> None:
         get_place_cache_store,
         get_pin_cache_store,
         get_budget_cache_store,
+        get_rate_limit_counter,
     )
 
     for getter in closable_getters:
@@ -1076,13 +1182,20 @@ def shutdown_container() -> None:
             continue
 
         try:
-            getter().close()
+            resource = getter()
+
+            if resource is not None:
+                resource.close()
 
         except Exception:
             logger.exception(
                 "Failed to close infrastructure resource: %s",
                 getter.__name__,
             )
+
+    if get_planning_executor.cache_info().currsize:
+        # Shutdown drained the graph first; anything still queued is dropped.
+        get_planning_executor().shutdown(wait=False, cancel_futures=True)
 
     # Clearing releases references only; nothing is constructed.
     for getter in _ALL_GETTERS:

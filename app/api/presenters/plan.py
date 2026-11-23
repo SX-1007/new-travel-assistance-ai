@@ -17,6 +17,7 @@ from app.api.schemas.common import PlanningUnavailableReason
 from app.modules.itinerary.models import DailyItinerary
 from app.modules.itinerary.validators import validate_itinerary_candidate
 from app.modules.routing.models import GeoJSONFeatureCollection, canonicalize_daily_map_keys
+from app.orchestration.nodes.replies import QUOTA_EXHAUSTED_ISSUE, QUOTA_NEW_PLAN_TEXT
 from app.orchestration.planning_requirements import build_trip_requirements
 from app.orchestration.state import AgentState
 from app.shared.text import content_text
@@ -24,6 +25,12 @@ from app.shared.types import CountryCode
 
 
 PLANNING_UNAVAILABLE_MESSAGE: Final = "Planning is temporarily unavailable. Please retry."
+
+
+def planning_unavailable_message(reason: PlanningUnavailableReason) -> str:
+    """The fixed reply for a new trip that couldn't be planned."""
+
+    return QUOTA_NEW_PLAN_TEXT if reason == "provider_quota_exhausted" else PLANNING_UNAVAILABLE_MESSAGE
 
 _SNAPSHOT_FIELDS: Final = frozenset(
     {
@@ -110,6 +117,9 @@ def planning_unavailable_reason(state: Mapping[str, Any]) -> PlanningUnavailable
         if isinstance(code, str)
     ]
 
+    if any(code.endswith(QUOTA_EXHAUSTED_ISSUE) for code in codes):
+        return "provider_quota_exhausted"
+
     if any("deadline" in code or "timeout" in code for code in codes):
         return "deadline_exhausted"
 
@@ -159,6 +169,7 @@ __all__ = [
     "PLANNING_UNAVAILABLE_MESSAGE",
     "AcceptedPlan",
     "accepted_plan",
+    "planning_unavailable_message",
     "planning_unavailable_reason",
     "promoted_reply",
     "turn_reply",

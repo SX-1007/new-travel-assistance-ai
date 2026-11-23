@@ -521,3 +521,31 @@ def test_replan_days_that_do_not_exist_change_nothing():
 
     assert result.itinerary == skeleton(2)
     assert search.calls == [] and ideas.rescue_calls == []
+
+
+def test_a_limit_reached_part_way_still_gives_every_day_a_place():
+    # Day 1's ideas come first, but lookups go day by day: with 2 searches
+    # each day gets its first idea, instead of day 1 getting both.
+    ideas = FakeIdeas(
+        initial=[idea("Senso-ji", 1, 1), idea("Tokyo Tower", 1, 2), idea("Meiji Shrine", 2, 1), idea("Ueno Park", 2, 2)],
+        rescues=[[], []],
+    )
+    planner, _ = make(ideas, max_searches=2)
+
+    result = planner.plan(request(skeleton(2)))
+
+    assert [names(day) for day in result.itinerary] == [["Senso-ji"], ["Meiji Shrine"]]
+    assert result.missing_days == ()
+
+
+def test_a_shared_quota_carries_over_between_calls():
+    from app.modules.places.policies import SearchQuota
+
+    ideas = FakeIdeas(initial=[idea("Senso-ji", 1, 1), idea("Tokyo Tower", 1, 2)], rescues=[[], []])
+    planner, _ = make(ideas)
+    quota = SearchQuota(3, used=2)
+
+    result = planner.plan(request(skeleton(1)), quota=quota)
+
+    assert result.searches_used == 1 and quota.used == 3
+    assert names(result.itinerary[0]) == ["Senso-ji"]

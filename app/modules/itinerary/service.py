@@ -49,6 +49,7 @@ from app.modules.itinerary.ports import (
     PlanningStages,
 )
 from app.modules.itinerary.validators import validate_itinerary_candidate
+from app.shared.exceptions import ProviderQuotaExhausted
 
 
 logger = logging.getLogger(__name__)
@@ -67,7 +68,13 @@ StopReason = Literal[
     "booking_unrecoverable",
     "no_progress",
     "attempts_exhausted",
+    # A paid provider's quota is used up: no retry can succeed.
+    "provider_quota_exhausted",
 ]
+
+# The issue code for a stage stopped by a used-up provider quota; the API
+# reports it as its own public reason.
+PROVIDER_QUOTA_ISSUE: Final = "provider.quota_exhausted"
 
 
 class Stage(IntEnum):
@@ -129,7 +136,7 @@ class _Step:
 
 
 class _StageFailed(Exception):
-    def __init__(self, stage: Stage, retry: _Step, error: Exception) -> None:
+    def __init__(self, stage: Stage, retry: _Step | StopReason, error: Exception) -> None:
         super().__init__(stage.label)
         self.stage = stage
         self.retry = retry
@@ -428,6 +435,17 @@ class _Transaction:
             )
             raise
 
+        except ProviderQuotaExhausted as exc:
+            self._log(
+                "planning.stage",
+                attempt,
+                stage.label,
+                "failed",
+                issue_codes=[PROVIDER_QUOTA_ISSUE],
+                started=started,
+            )
+            raise _StageFailed(stage, "provider_quota_exhausted", exc) from exc
+
         except Exception as exc:
             self._log(
                 "planning.stage",
@@ -567,6 +585,17 @@ def _empty_day_report(
 def _stage_error_report(failure: _StageFailed) -> ValidationReport:
     label = failure.stage.label
 
+    if isinstance(failure.error, ProviderQuotaExhausted):
+        return ValidationReport(
+            issues=(
+                ValidationIssue(
+                    code=PROVIDER_QUOTA_ISSUE,
+                    path=f"stage.{label}",
+                    message=f"The {label} stage stopped: a search provider's quota is used up.",
+                ),
+            )
+        )
+
     return ValidationReport(
         issues=(
             ValidationIssue(
@@ -592,6 +621,7 @@ def _input_error_report(error: PlanningInputError) -> ValidationReport:
 
 __all__ = [
     "PLANNING_MAX_ATTEMPTS",
+    "PROVIDER_QUOTA_ISSUE",
     "ItineraryPlanningService",
     "PlanningResult",
     "PlanningStatus",

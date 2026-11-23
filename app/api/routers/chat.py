@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Annotated
 
-from fastapi import APIRouter, Path, Query, Response
+from fastapi import APIRouter, Depends, Path, Query, Response
 
-from app.api.dependencies import CurrentUser, RequestId
+from app.api.dependencies import CurrentUser, RequestId, rate_limited
+from app.api.request_limits import CHAT_MESSAGES
 from app.api.presenters.chat import ChatTurnResponse, chat_turn_response, history_session
 from app.api.providers import ChatHistoryLoader, HistoryLoader, Reviewer, Runtime
 from app.api.schemas.chat import (
@@ -31,6 +33,9 @@ from app.shared.observability import LogContext, log_event
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["chat"])
 
+# Signed in, and within the chat-message limit (429 otherwise).
+ChatUser = Annotated[str, Depends(rate_limited(CHAT_MESSAGES))]
+
 
 @router.post(
     "/message",
@@ -39,7 +44,7 @@ router = APIRouter(tags=["chat"])
 )
 async def send_chat_message(
     chat: ChatRequest,
-    user_id: CurrentUser,
+    user_id: ChatUser,
     request_id: RequestId,
     runtime: Runtime,
 ) -> ChatTurnResponse:

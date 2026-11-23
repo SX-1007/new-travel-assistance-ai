@@ -19,6 +19,7 @@ import {
   type TripFormRequest, type TripSubmissionResponse,
 } from '../lib/api';
 import { loadProfileForGate } from '../lib/profileGate';
+import { MAX_TRAVELLERS, tripLimitProblem } from '../lib/tripLimits';
 import MessageContent from './components/MessageContent';
 import ChatBudgetConfirmationCard from './components/ChatBudgetConfirmationCard';
 import ItineraryCanvas, {
@@ -303,6 +304,14 @@ const NewTripForm = ({
     if (!budgetUnknown && (!budget || Number.isNaN(budgetNum) || budgetNum <= 0))
       return setLocalError('Please enter a total budget greater than 0.');
     if (numPeople < 1) return setLocalError('There must be at least 1 traveller.');
+    const limitProblem = tripLimitProblem({
+      country: country.trim(),
+      cities: cities(),
+      numPeople,
+      startDate,
+      endDate,
+    });
+    if (limitProblem) return setLocalError(limitProblem);
 
     setLocalError(null);
     setBudgetDecision(null);
@@ -520,10 +529,11 @@ const NewTripForm = ({
               <input
                 type="number"
                 min={1}
+                max={MAX_TRAVELLERS}
                 value={numPeople}
                 onChange={(e) => {
                   invalidateBudgetDecision();
-                  setNumPeople(Math.max(1, Number(e.target.value) || 1));
+                  setNumPeople(Math.min(MAX_TRAVELLERS, Math.max(1, Number(e.target.value) || 1)));
                 }}
                 className={inputClass}
               />

@@ -22,7 +22,7 @@ from typing import Any, Literal, Protocol
 from langchain_core.messages import HumanMessage
 
 from app.modules.budget.assessment import is_budget_sufficient
-from app.modules.budget.exceptions import BudgetAssessmentUnavailable
+from app.modules.budget.exceptions import BudgetAssessmentUnavailable, BudgetProviderQuotaExhausted
 from app.modules.budget.models import BudgetAssessment, BudgetTrip
 from app.modules.budget.service import BudgetAssessmentService
 from app.modules.destination.exceptions import DestinationResolutionUnavailable
@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 
 UnavailableReason = Literal[
     "provider_data_unavailable",
+    "provider_quota_exhausted",
     "assessment_cache_unavailable",
     "assessment_expired_or_invalid",
     "destination_resolution_unavailable",
@@ -162,6 +163,9 @@ class NewTripIntake:
         else:
             try:
                 result = await asyncio.to_thread(self._budget.get_or_create, trip)
+            except BudgetProviderQuotaExhausted:
+                _log(log_context, "budget_gate", "provider.quota_exhausted")
+                return BudgetCheckUnavailable("provider_quota_exhausted")
             except BudgetAssessmentUnavailable:
                 _log(log_context, "budget_gate", "provider.data.unavailable")
                 return BudgetCheckUnavailable("provider_data_unavailable")

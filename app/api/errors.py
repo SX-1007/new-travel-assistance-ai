@@ -36,6 +36,10 @@ from app.modules.identity.exceptions import IdentityVerificationUnavailable
 from app.modules.profile.exceptions import ProfileUnavailable
 from app.shared.exceptions import (
     InvalidTurnRequest,
+    PlanAlreadyRunning,
+    PlanningCapacityFull,
+    RateLimitExceeded,
+    RateLimitUnavailable,
     SessionAccessDenied,
     SessionBusy,
 )
@@ -88,6 +92,24 @@ ERROR_RESPONSES: Final[Mapping[type[BaseException], ErrorResponse]] = {
     InvalidTurnRequest: ErrorResponse(
         status.HTTP_422_UNPROCESSABLE_ENTITY,
         "The request is missing a valid session or message.",
+    ),
+    # ── Request limits (``api/request_limits.py``) ──
+    # RateLimitExceeded has its own handler: its message and Retry-After
+    # depend on the rule and window.
+    RateLimitUnavailable: ErrorResponse(
+        status.HTTP_503_SERVICE_UNAVAILABLE,
+        "Request limits can't be checked right now. Please retry shortly.",
+        retry_after_seconds=30,
+    ),
+    PlanAlreadyRunning: ErrorResponse(
+        status.HTTP_409_CONFLICT,
+        "You already have a trip being planned. Wait for it to finish before starting another.",
+        retry_after_seconds=30,
+    ),
+    PlanningCapacityFull: ErrorResponse(
+        status.HTTP_503_SERVICE_UNAVAILABLE,
+        "The planner is busy with other trips right now. Please try again in a minute.",
+        retry_after_seconds=60,
     ),
     ServiceNotReady: ErrorResponse(
         status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -179,6 +201,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         app.add_exception_handler(exc_type, _handle_mapped)
 
     app.add_exception_handler(RequestValidationError, _handle_validation)
+    app.add_exception_handler(RateLimitExceeded, _handle_rate_limited)
 
     # Starlette hands this one to its server-error middleware, which still
     # re-raises after responding so the server logs the traceback.
@@ -206,6 +229,13 @@ async def _handle_validation(request: Request, exc: RequestValidationError) -> J
         },
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
     )
+
+
+async def _handle_rate_limited(request: Request, exc: RateLimitExceeded) -> JSONResponse:
+    # The message is our own fixed text with the limit and wait in it.
+    mapped = ErrorResponse(status.HTTP_429_TOO_MANY_REQUESTS, exc.message, exc.retry_after_seconds)
+    _log(request, exc, mapped)
+    return _json(mapped)
 
 
 async def _handle_unexpected(request: Request, exc: Exception) -> JSONResponse:

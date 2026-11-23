@@ -192,21 +192,23 @@ def state(**overrides):
 
 
 class World:
-    def __init__(self, *, ideas, flights=None, hotels=None, search=None):
+    def __init__(self, *, ideas, flights=None, hotels=None, search=None, max_searches=None):
         self.flights = flights or FakeFlights()
         self.hotels = hotels or FakeHotels()
         self.search = search or FakePlaceSearch()
         self.ideas = ideas
         self.directions = FakeDirections()
+        self.max_searches = max_searches
 
     def run(self, agent_state, **kwargs):
         places = VerifiedPlaceSearch(search=self.search, geocoder=FakeGeocoder(), locator=FakeLocator())
+        limit = {} if self.max_searches is None else {"max_searches": self.max_searches}
         return asyncio.run(
             run_planning_transaction(
                 agent_state,
                 planner=ItineraryPlanningService(),
                 booking=BookingPlanningService(flights=self.flights, hotels=self.hotels),
-                activities=ActivityPlanningService(ideas=self.ideas, places=places),
+                activities=ActivityPlanningService(ideas=self.ideas, places=places, **limit),
                 routes=DailyRouteService(directions=self.directions, geocoder=FakeAirportGeocoder()),
                 **kwargs,
             )
@@ -380,3 +382,116 @@ def test_travel_days_get_no_places_and_the_plan_still_validates():
     assert ideas.request.day_hours == (0.0, 14.0, 0.0)
     assert ideas.request.max_per_day == 5
     assert ideas.rescue_calls and all(call == (2,) for call in ideas.rescue_calls)
+
+
+# ── One search limit per planning run ───────────────────────────────
+
+
+class PaidPlaceSearch(FakePlaceSearch):
+    """Counts only searches the quota paid for."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.paid = 0
+
+    def search(self, query, *, near=None, zoom=11, quota=None):
+        results = super().search(query, near=near, zoom=zoom, quota=quota)
+        self.paid += 1
+        return results
+
+
+def _unverifiable(day, count, prefix):
+    return [_idea(f"{prefix} {n}", day, n) for n in range(1, count + 1)]
+
+
+def test_every_attempt_of_a_run_shares_one_search_limit():
+    # Day 3 never verifies, so the run takes a second attempt for it. Before,
+    # each attempt got a fresh limit (here 6 + 6); now both share the 6.
+    ideas = FakeIdeas(
+        [_idea("Senso-ji", 1, 1), _idea("Tokyo Tower", 2, 1), *_unverifiable(3, 5, "Nowhere")],
+        rescues=[_unverifiable(3, 5, f"Lost {n}") for n in range(6)],
+    )
+    world = World(ideas=ideas, search=PaidPlaceSearch(), max_searches=6)
+
+    update = world.run(state())
+
+    # Two attempts, each rejected for the empty day 3.
+    assert update["planning_issue_codes"] == ["day.activities.empty"] * 2
+    assert world.search.paid == 6
+    assert update["planning_searches_used"] == 6
+
+
+def test_a_run_continued_in_a_later_turn_keeps_its_search_count():
+    # Three attempts in all: two earlier ones already used 5 of the 6
+    # searches, so the third may make only one more.
+    world = World(ideas=FakeIdeas(GOOD_IDEAS), search=PaidPlaceSearch(), max_searches=6)
+
+    update = world.run(state(planning_attempts=2, planning_searches_used=5))
+
+    assert world.search.paid == 1
+    assert update["planning_searches_used"] == 6
+    assert update["planning_attempts"] == 3
+
+
+def test_the_limit_is_sized_from_the_trip():
+    from app.modules.activities.policies import MAX_SEARCHES_PER_PLAN, MIN_SEARCHES_PER_PLAN, search_limit_for_trip
+
+    assert search_limit_for_trip(3, "moderate") == 19
+    assert search_limit_for_trip(5, "moderate") == 32
+    assert search_limit_for_trip(1, "relaxed") == MIN_SEARCHES_PER_PLAN
+    assert search_limit_for_trip(14, "packed") == MAX_SEARCHES_PER_PLAN
+
+
+def test_a_run_never_searches_more_than_its_trip_sized_limit():
+    # A 3-day moderate trip may search 19 times in all, however many ideas fail.
+    ideas = FakeIdeas(
+        [*_unverifiable(1, 5, "A"), *_unverifiable(2, 5, "B"), *_unverifiable(3, 5, "C")],
+        rescues=[[*_unverifiable(1, 5, f"R{n}"), *_unverifiable(3, 5, f"S{n}")] for n in range(6)],
+    )
+    world = World(ideas=ideas, search=PaidPlaceSearch())
+
+    update = world.run(state())
+
+    assert update["planning_outcome"] == "unavailable"
+    assert world.search.paid == update["planning_searches_used"] == 19
+
+
+# ── A used-up search quota ──────────────────────────────────────────
+
+
+class UsedUpFlights(FakeFlights):
+    def search_flights(self, **kwargs):
+        from app.shared.exceptions import ProviderQuotaExhausted
+
+        self.calls += 1
+        raise ProviderQuotaExhausted("searches used up")
+
+
+class UsedUpPlaces(FakePlaceSearch):
+    def search(self, query, *, near=None, zoom=11, quota=None):
+        from app.modules.places.exceptions import PlaceProviderQuotaExhausted
+
+        self.calls += 1
+        raise PlaceProviderQuotaExhausted("searches used up")
+
+
+def test_used_up_flight_searches_stop_the_run_at_once():
+    world = World(ideas=FakeIdeas(GOOD_IDEAS), flights=UsedUpFlights())
+
+    update = world.run(state())
+
+    assert update["planning_outcome"] == "unavailable"
+    assert update["planning_issue_codes"] == ["provider.quota_exhausted"]
+    # Final: no retry, and no later graph turn restarts it.
+    assert update["planning_attempts"] == PLANNING_MAX_ATTEMPTS
+    assert world.ideas.propose_calls == 0 and world.search.calls == 0
+
+
+def test_used_up_place_searches_stop_the_run_instead_of_emptying_days():
+    world = World(ideas=FakeIdeas(GOOD_IDEAS), search=UsedUpPlaces())
+
+    update = world.run(state())
+
+    assert update["planning_outcome"] == "unavailable"
+    assert update["planning_issue_codes"] == ["provider.quota_exhausted"]
+    assert world.ideas.propose_calls == 1

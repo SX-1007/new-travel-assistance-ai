@@ -11,10 +11,18 @@ Key design decisions
   SelectorEventLoop, and only run.py can choose it before the loop exists.
 • **Errors** — every graph/provider/storage exception maps to a fixed-detail
   HTTP response in ``app/api/errors.py``; routes have no try/except.
-• **orjson** responses, **GZip** over 1 KB, explicit **CORS** origins
-  (browsers reject ``*`` together with credentials).
+• **orjson** responses, **GZip** over 1 KB, explicit **CORS** origins.
 • **Probes** — ``/health`` and ``/healthz`` are liveness (the process
   answers); ``/health/ready`` checks Postgres, vectors and checkpoints.
+• **ENVIRONMENT** (read without loading settings, see
+  ``infrastructure/config/environment.py``). In "production": no ``/docs``,
+  ``/redoc`` or ``/openapi.json``; CORS allows only the https origins in
+  ``CORS_ORIGINS`` (required), without credentials and with a fixed header
+  list; the container refuses to start with development sign-in or
+  without the request-limit store. "development" keeps the open defaults.
+• **Threads** — the shared pool (``asyncio.to_thread``: health checks,
+  profile reads, memory extraction) gets ``SHARED_THREADS``; planning has
+  its own small pool in the container, so long plans can't starve it.
 """
 
 from __future__ import annotations
@@ -23,8 +31,9 @@ import asyncio
 import logging
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
+from typing import AsyncIterator, Final
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -40,6 +49,7 @@ from app.bootstrap.container import (
     shutdown_graph,
 )
 from app.bootstrap.health import readiness, verify_startup_health
+from app.infrastructure.config.environment import app_environment, deployment_value
 
 # ──────────────────────────────────────────────────────────────────── Logging
 logging.basicConfig(
@@ -57,6 +67,17 @@ for _noisy in ("httpx", "httpcore", "urllib3"):
 
 _UNLOGGED_PATHS = frozenset({"/", "/health", "/healthz", "/health/ready", "/favicon.ico"})
 
+# The default pool is min(32, CPUs + 4): 5 threads on a 1-CPU server, too
+# few once requests wait on providers in threads.
+SHARED_THREADS: Final = 32
+
+_DEV_ORIGINS: Final = "http://localhost:3000,http://localhost:5173"
+_API_METHODS: Final = ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+# Everything the frontend sends; production allows nothing else.
+_API_HEADERS: Final = ["Authorization", "Content-Type", "X-Request-ID"]
+# Readable by the frontend's JavaScript across origins.
+_EXPOSED_HEADERS: Final = ["X-Process-Time", "Retry-After"]
+
 
 # ──────────────────────────────────────────────────────────────────── Lifespan
 @asynccontextmanager
@@ -65,6 +86,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     started = time.perf_counter()
     logger.info("Starting Travel Assistant AI...")
+
+    # Before the first to_thread below. asyncio.run shuts it down at exit.
+    asyncio.get_running_loop().set_default_executor(
+        ThreadPoolExecutor(max_workers=SHARED_THREADS, thread_name_prefix="shared")
+    )
 
     try:
         try:
@@ -100,14 +126,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 # ──────────────────────────────────────────────────────────── App factory
 def create_app() -> FastAPI:
+    production = app_environment() == "production"
+
     app = FastAPI(
         title="Travel Assistant AI",
         description="Backend for self-adaptive travel planning agent",
         version=os.getenv("APP_VERSION", "1.0.0"),
         lifespan=lifespan,
         default_response_class=ORJSONResponse,
-        docs_url="/docs",
-        redoc_url="/redoc",
+        # Production publishes no API description.
+        docs_url=None if production else "/docs",
+        redoc_url=None if production else "/redoc",
+        openapi_url=None if production else "/openapi.json",
     )
 
     register_exception_handlers(app)
@@ -116,22 +146,7 @@ def create_app() -> FastAPI:
 
     app.add_middleware(GZipMiddleware, minimum_size=1024)
 
-    allowed_origins = [
-        origin.strip()
-        for origin in os.getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:5173").split(",")
-        if origin.strip()
-    ]
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=allowed_origins,
-        # Any localhost port too: Vite moves to 5174, 5175, … when 5173 is
-        # busy, and a mismatched port must not silently break the app.
-        allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
-        allow_credentials=True,
-        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        allow_headers=["*"],
-        expose_headers=["X-Process-Time"],
-    )
+    _add_cors(app, production=production)
 
     @app.middleware("http")
     async def _timing_and_log(request: Request, call_next):
@@ -179,6 +194,44 @@ def create_app() -> FastAPI:
         )
 
     return app
+
+
+def _add_cors(app: FastAPI, *, production: bool) -> None:
+    origins = [
+        origin.strip()
+        for origin in deployment_value("CORS_ORIGINS", "" if production else _DEV_ORIGINS).split(",")
+        if origin.strip()
+    ]
+
+    if production:
+        if not origins or any(not origin.startswith("https://") or "*" in origin for origin in origins):
+            raise RuntimeError(
+                "In production, CORS_ORIGINS must list the frontend's https:// origin(s), comma-separated."
+            )
+
+        # Sign-in is a bearer token, never a cookie: no credentials needed.
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=origins,
+            allow_credentials=False,
+            allow_methods=_API_METHODS,
+            allow_headers=_API_HEADERS,
+            expose_headers=_EXPOSED_HEADERS,
+            max_age=600,
+        )
+        return
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        # Any localhost port too: Vite moves to 5174, 5175, … when 5173 is
+        # busy, and a mismatched port must not silently break the app.
+        allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+        allow_credentials=True,
+        allow_methods=_API_METHODS,
+        allow_headers=["*"],
+        expose_headers=_EXPOSED_HEADERS,
+    )
 
 
 # Module-level app instance (uvicorn: app.main:app)

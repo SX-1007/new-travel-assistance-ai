@@ -378,3 +378,34 @@ def test_invalid_inputs_are_unavailable(proposal, overrides, reason):
     decision = gate(make_service(), proposal, **overrides)
     assert decision.status == "budget_check_unavailable"
     assert decision.reason == reason
+
+
+# ── A used-up search quota ──────────────────────────────────────────
+
+
+class UsedUpFlights(FakeFlights):
+    def search_flights(self, **kwargs):
+        from app.shared.exceptions import ProviderQuotaExhausted
+
+        self.calls += 1
+        raise ProviderQuotaExhausted("searches used up")
+
+
+def test_a_used_up_search_quota_is_its_own_unavailable_reason():
+    from app.modules.budget.exceptions import BudgetProviderQuotaExhausted
+
+    cache = MemoryCache()
+
+    with pytest.raises(BudgetProviderQuotaExhausted) as caught:
+        make_service(flights=UsedUpFlights(), cache=cache).get_or_create(TRIP)
+
+    # Still a BudgetAssessmentUnavailable for callers that know only that.
+    assert isinstance(caught.value, BudgetAssessmentUnavailable)
+    assert cache.claims == {}
+
+
+def test_the_chat_budget_check_reports_a_used_up_quota():
+    decision = gate(make_service(flights=UsedUpFlights()), {"mode": "amount", "total_base_budget": 10000})
+
+    assert decision.status == "budget_check_unavailable"
+    assert decision.reason == "provider_quota_exhausted"

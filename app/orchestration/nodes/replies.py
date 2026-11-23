@@ -20,6 +20,7 @@ from typing import Any, Final, Protocol
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
 
+from app.modules.itinerary.service import PROVIDER_QUOTA_ISSUE
 from app.modules.output_review.models import OutputReviewDecision
 from app.modules.output_review.policies import is_read_only_itinerary_history_request
 from app.modules.output_review.service import OutputReviewService
@@ -77,6 +78,24 @@ CHANGE_NOT_SAVED: Final = (
     "I couldn't build a verified plan for that change, so nothing was saved and "
     "your existing itinerary is unchanged. Please try again shortly."
 )
+# A paid search provider's quota is used up: retrying right away can't help,
+# so these never say "try again shortly".
+QUOTA_NEW_PLAN_TEXT: Final = (
+    "Live flight, hotel and place prices are used up for now, so I can't plan "
+    "this trip yet. Retrying right away won't help; please try again later. "
+    "Nothing has been saved."
+)
+QUOTA_CHANGE_TEXT: Final = (
+    "Live flight, hotel and place prices are used up for now, so I couldn't "
+    "re-plan. Your existing itinerary is unchanged; please try again later."
+)
+QUOTA_BUDGET_TEXT: Final = (
+    "Live flight and hotel prices are used up for now, so the budget can't be "
+    "checked yet. Your existing trip plan has not been changed; please try "
+    "again later."
+)
+QUOTA_EXHAUSTED_REASON: Final = "provider_quota_exhausted"
+QUOTA_EXHAUSTED_ISSUE: Final = PROVIDER_QUOTA_ISSUE
 EDIT_NOT_VERIFIED: Final = (
     "I found the requested itinerary change, but I couldn't verify the final "
     "updated plan, so I did not save the change. Your existing itinerary has "
@@ -319,6 +338,9 @@ def unverified_reply_text(state: AgentState) -> str:
 def planning_failure_text(state: AgentState, kind: PlanKind) -> str:
     """Fallback when a plan could not be built, reviewed or promoted."""
 
+    if any(code.endswith(QUOTA_EXHAUSTED_ISSUE) for code in state.planning_issue_codes):
+        return QUOTA_CHANGE_TEXT if effective_plan_revision(state) > 0 else QUOTA_NEW_PLAN_TEXT
+
     if kind is PlanKind.EDIT:
         return EDIT_NOT_VERIFIED
 
@@ -339,6 +361,11 @@ async def write_reply(
 
 
 __all__ = [
+    "QUOTA_BUDGET_TEXT",
+    "QUOTA_CHANGE_TEXT",
+    "QUOTA_EXHAUSTED_ISSUE",
+    "QUOTA_EXHAUSTED_REASON",
+    "QUOTA_NEW_PLAN_TEXT",
     "AGENT_UNAVAILABLE",
     "BUDGET_DECISION_UNAVAILABLE",
     "BUDGET_GATE",

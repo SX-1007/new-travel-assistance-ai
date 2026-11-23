@@ -21,6 +21,7 @@ orjson==3.11.3                              # ORJSONResponse
 # ── Settings ─────────────────────────────────────────────────────────
 pydantic==2.11.7
 pydantic-settings==2.10.1                   # infrastructure/config/settings.py
+python-dotenv==1.2.2                        # config/environment.py (main.py reads ENVIRONMENT without Settings)
 
 # ── PostgreSQL (psycopg v3) ──────────────────────────────────────────
 psycopg[binary]==3.2.10

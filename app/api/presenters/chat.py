@@ -36,6 +36,7 @@ from app.api.schemas.chat import (
 from app.modules.output_review.models import OutputReviewContext
 from app.modules.output_review.service import OutputReviewService
 from app.orchestration.graph import TurnResult
+from app.orchestration.nodes.replies import QUOTA_BUDGET_TEXT, QUOTA_EXHAUSTED_REASON
 from app.shared.text import content_text
 
 
@@ -63,7 +64,11 @@ def chat_turn_response(result: TurnResult, *, now: datetime | None = None) -> Ch
         )
 
     if gate == "unavailable":
-        return ChatBudgetGateResponse(status="budget_check_unavailable", chat_reply=BUDGET_CHECK_UNAVAILABLE_MESSAGE)
+        quota = state.get("budget_gate_reason") == QUOTA_EXHAUSTED_REASON
+        return ChatBudgetGateResponse(
+            status="budget_check_unavailable",
+            chat_reply=QUOTA_BUDGET_TEXT if quota else BUDGET_CHECK_UNAVAILABLE_MESSAGE,
+        )
 
     messages = state.get("messages") or ()
     reply = turn_reply(messages)

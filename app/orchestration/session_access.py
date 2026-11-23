@@ -38,6 +38,8 @@ class SessionOwnershipStore(Protocol):
 
     def verify(self, session_id: str, user_id: str) -> bool: ...
 
+    def touch(self, session_id: str, user_id: str) -> bool: ...
+
 
 class SessionAccessService:
     """Async orchestration facade over session-ownership persistence."""
@@ -148,3 +150,9 @@ class SessionAccessService:
             session_id,
             user_id,
         )
+
+    async def touch_session(self, session_id: str, user_id: str) -> bool:
+        """Record that the session just changed: chat history lists the
+        newest first."""
+
+        return await asyncio.to_thread(self._store.touch, session_id, user_id)

@@ -247,6 +247,13 @@ class AgentState(BaseModel):
         ge=0,
     )
 
+    # Paid place searches used by the current planning run, all attempts
+    # together (its limit: ``ActivityPlanningService.search_quota``).
+    planning_searches_used: int = Field(
+        default=0,
+        ge=0,
+    )
+
     planning_issue_codes: list[str] = Field(
         default_factory=list,
     )

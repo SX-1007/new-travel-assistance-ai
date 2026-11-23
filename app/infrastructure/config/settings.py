@@ -7,6 +7,7 @@ rather than failing a request later.
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -26,6 +27,13 @@ class Settings(BaseSettings):
         extra="ignore",
         case_sensitive=True,
     )
+
+    # ── Deployment ───────────────────────────────────────────────────
+    # "production" turns off /docs, allows only CORS_ORIGINS, refuses to
+    # start with development sign-in or without Upstash (request limits),
+    # and refuses form/chat requests whose limits can't be checked.
+    # main.py reads the same value through ``config/environment.py``.
+    ENVIRONMENT: Literal["development", "production"] = "development"
 
     # ── Gemini API keys ──────────────────────────────────────────────
     GEMINI_API_KEY: str = Field(
@@ -98,6 +106,10 @@ class Settings(BaseSettings):
     # SerpAPI only when Exa fails, finds nothing or is out of credit.
     EXA_API_KEY: str = ""
     FREECURRENCY_API: str = Field(..., min_length=1)
+
+    @property
+    def is_production(self) -> bool:
+        return self.ENVIRONMENT == "production"
 
     # ── Effective keys: a task's own key, else the fallback ──────────
     @property

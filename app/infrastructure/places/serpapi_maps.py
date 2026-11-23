@@ -16,8 +16,9 @@ from collections.abc import Mapping
 from dataclasses import asdict
 from typing import Any, Final, Protocol
 
-from app.infrastructure.search.serpapi import SerpApiUnavailableError
+from app.infrastructure.search.serpapi import SerpApiQuotaExhausted, SerpApiUnavailableError
 from app.modules.places.exceptions import (
+    PlaceProviderQuotaExhausted,
     PlaceSearchQuotaExhausted,
     PlaceSearchUnavailable,
 )
@@ -267,6 +268,9 @@ class SerpApiMapsPlaceSearch:
 
         try:
             payload = self._client.search(params)
+
+        except SerpApiQuotaExhausted as exc:
+            raise PlaceProviderQuotaExhausted("Place searches are used up for now.") from exc
 
         except SerpApiUnavailableError as exc:
             raise PlaceSearchUnavailable("Place search failed.") from exc

@@ -26,7 +26,8 @@ from app.modules.budget.assessment import (
     build_assessment,
     matching_assessment,
 )
-from app.modules.budget.exceptions import BudgetAssessmentUnavailable
+from app.modules.budget.exceptions import BudgetAssessmentUnavailable, BudgetProviderQuotaExhausted
+from app.shared.exceptions import ProviderQuotaExhausted
 from app.modules.budget.models import (
     BudgetAssessment,
     BudgetAssessmentResult,
@@ -54,6 +55,8 @@ def _results(future: Future, label: str) -> Sequence[Any]:
     """A search's results; a failed or empty search is missing evidence."""
     try:
         results: Sequence[Any] = future.result()
+    except ProviderQuotaExhausted as exc:
+        raise BudgetProviderQuotaExhausted(f"{label} search quota is used up.") from exc
     except Exception as exc:
         raise BudgetAssessmentUnavailable(f"{label} search failed.") from exc
 

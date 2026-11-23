@@ -3,15 +3,25 @@
 Binds the booking, activity and routing services to one trip as the
 transaction's three stages, runs the transaction off the event loop, and
 returns only the state fields to update.
+
+One planning run has ONE limit on paid place searches, shared by all of
+its attempts. Its count is kept in ``planning_searches_used`` next to
+``planning_attempts``, so a run continued in a later graph turn goes on
+from the same count; ``planning_reset`` starts both again for a new run.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import functools
 import logging
 from collections.abc import Mapping, Sequence
+from concurrent.futures import Executor
+from datetime import date
 from typing import Any
 
+from app.modules.activities.policies import preferences_from_profile
 from app.modules.activities.service import ActivityPlanningService
 from app.modules.booking.service import BookingPlanningService
 from app.shared.observability import (
@@ -29,6 +39,7 @@ from app.modules.itinerary.service import (
     ItineraryPlanningService,
     PlanningResult,
 )
+from app.modules.places.policies import SearchQuota
 from app.modules.routing.service import DailyRouteService
 from app.orchestration.planning_requirements import build_trip_requirements
 from app.orchestration.state import AgentState
@@ -44,7 +55,7 @@ logger = logging.getLogger(__name__)
 # A retry of these can't change the outcome, so later graph turns must not
 # start the transaction again either.
 _FINAL_STOP_REASONS = frozenset(
-    {"invalid_input", "booking_unrecoverable", "no_progress"}
+    {"invalid_input", "booking_unrecoverable", "no_progress", "provider_quota_exhausted"}
 )
 
 
@@ -59,12 +70,14 @@ class TripPlanningStages:
         activities: ActivityPlanningService,
         routes: DailyRouteService,
         user_profile: Mapping[str, Any] | None = None,
+        search_quota: SearchQuota | None = None,
     ) -> None:
         self._state = state
         self._booking = booking
         self._activities = activities
         self._routes = routes
         self._user_profile = user_profile
+        self.search_quota = search_quota or plan_search_quota(state, activities, user_profile)
 
     def skeleton(self, *, reuse_evidence: bool) -> SkeletonDraft:
         try:
@@ -99,7 +112,8 @@ class TripPlanningStages:
                 itinerary=itinerary,
                 user_profile=self._user_profile,
                 replan_days=days or (),
-            )
+            ),
+            quota=self.search_quota,
         )
 
         return ActivityDraft(
@@ -119,6 +133,30 @@ class TripPlanningStages:
             itinerary=result.itinerary,
             maps=result.daily_maps,
         )
+
+
+def plan_search_quota(
+    state: AgentState,
+    activities: ActivityPlanningService,
+    user_profile: Mapping[str, Any] | None,
+) -> SearchQuota:
+    """The run's search limit, counting searches it already used."""
+
+    return activities.search_quota(
+        days=_trip_days(state),
+        pacing=preferences_from_profile(user_profile).pacing,
+        used=state.planning_searches_used,
+    )
+
+
+def _trip_days(state: AgentState) -> int:
+    try:
+        start = date.fromisoformat(state.start_date or "")
+        end = date.fromisoformat(state.end_date or "")
+    except ValueError:
+        return 1
+
+    return max((end - start).days + 1, 1)
 
 
 def log_context_from_config(config: Mapping[str, Any] | None) -> LogContext:
@@ -149,11 +187,14 @@ async def run_planning_transaction(
     routes: DailyRouteService,
     user_profile: Mapping[str, Any] | None = None,
     log_context: LogContext | None = None,
+    executor: Executor | None = None,
 ) -> dict[str, Any]:
     """Build a validated private candidate; the public plan is never touched.
 
     ``state.planning_attempts`` counts attempts across graph turns, so a
-    re-entry only gets the attempts that are left.
+    re-entry only gets the attempts that are left. The transaction runs on
+    ``executor`` (planning's own threads) or, without one, the loop's
+    default pool.
     """
 
     remaining = PLANNING_MAX_ATTEMPTS - state.planning_attempts
@@ -196,13 +237,17 @@ async def run_planning_transaction(
     )
 
     try:
-        result = await asyncio.to_thread(
+        # As asyncio.to_thread does, but on the given pool: the context goes
+        # along, so log fields and tracing stay attached.
+        build = functools.partial(
+            contextvars.copy_context().run,
             planner.build,
             requirements,
             stages,
             max_attempts=remaining,
             log_context=log_context,
         )
+        result = await asyncio.get_running_loop().run_in_executor(executor, build)
 
     except asyncio.CancelledError:
         # The worker thread finishes its current provider call; its result
@@ -219,14 +264,19 @@ async def run_planning_transaction(
         )
         raise
 
-    return planning_state_update(state, result)
+    return planning_state_update(state, result, searches_used=stages.search_quota.used)
 
 
 def planning_state_update(
     state: AgentState,
     result: PlanningResult,
+    *,
+    searches_used: int | None = None,
 ) -> dict[str, Any]:
-    """Project a transaction result onto the private planning state fields."""
+    """Project a transaction result onto the private planning state fields.
+
+    ``searches_used`` is the run's total so far (``None``: unchanged).
+    """
 
     attempts = state.planning_attempts + result.attempts
 
@@ -253,12 +303,16 @@ def planning_state_update(
             *state.planning_issue_codes,
             *(issue.code for issue in result.issues),
         ],
+        "planning_searches_used": (
+            state.planning_searches_used if searches_used is None else searches_used
+        ),
     }
 
 
 __all__ = [
     "TripPlanningStages",
     "log_context_from_config",
+    "plan_search_quota",
     "planning_state_update",
     "run_planning_transaction",
 ]

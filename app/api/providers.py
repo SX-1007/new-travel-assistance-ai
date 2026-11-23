@@ -8,11 +8,13 @@ import infrastructure. ``dependencies.py`` stays HTTP-only (auth, request id).
 from __future__ import annotations
 
 from collections.abc import Callable
+from functools import partial
 from typing import Annotated, Any
 
 from fastapi import Depends
 
 from app.api.errors import ServiceNotReady
+from app.api.request_limits import PlanSlots, RequestLimits
 from app.bootstrap import container
 from app.modules.identity.ports import IdentityTokenVerifierPort
 from app.modules.output_review.service import OutputReviewService
@@ -55,10 +57,18 @@ def place_pin_locator() -> PlacePinLocator:
     return container.get_place_pin_locator()
 
 
+def request_limits() -> RequestLimits:
+    return container.get_request_limits()
+
+
+def plan_slots() -> PlanSlots:
+    return container.get_plan_slots()
+
+
 def chat_history_loader() -> HistoryLoader:
     """Newest checkpoint per session for a user (blocking; run in a thread)."""
 
-    return fetch_chat_history_checkpoints
+    return partial(fetch_chat_history_checkpoints, sessions=container.get_session_ownership_repository())
 
 
 Runtime = Annotated[GraphRuntime, Depends(graph_runtime)]
@@ -67,11 +77,15 @@ Reviewer = Annotated[OutputReviewService, Depends(output_review)]
 ChatHistoryLoader = Annotated[HistoryLoader, Depends(chat_history_loader)]
 Onboarding = Annotated[OnboardingService, Depends(onboarding)]
 PinLocator = Annotated[PlacePinLocator, Depends(place_pin_locator)]
+Limits = Annotated[RequestLimits, Depends(request_limits)]
+Slots = Annotated[PlanSlots, Depends(plan_slots)]
 
 
 __all__ = [
     "ChatHistoryLoader",
     "HistoryLoader",
+    "Limits",
+    "Slots",
     "Onboarding",
     "PinLocator",
     "Reviewer",
@@ -83,4 +97,6 @@ __all__ = [
     "onboarding",
     "output_review",
     "place_pin_locator",
+    "plan_slots",
+    "request_limits",
 ]

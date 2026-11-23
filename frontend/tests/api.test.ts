@@ -358,6 +358,24 @@ describe('frontend API client', () => {
     expect(api.isTripSubmissionResponse(initialResponse)).toBe(false);
   });
 
+  it('accepts the used-up search quota reason on form replies', async () => {
+    const api = await loadApi();
+    expect(api.isTripSubmissionResponse({
+      status: 'budget_check_unavailable', reason: 'provider_quota_exhausted',
+      chat_reply: 'Live flight and hotel prices are used up for now.',
+      itinerary: null, daily_geojson_maps: null,
+    })).toBe(true);
+    expect(api.isTripSubmissionResponse({
+      status: 'planning_unavailable', reason: 'provider_quota_exhausted',
+      chat_reply: 'Live flight, hotel and place prices are used up for now.', retryable: true,
+      itinerary: null, daily_geojson_maps: null,
+    })).toBe(true);
+    expect(api.isTripSubmissionResponse({
+      status: 'budget_check_unavailable', reason: 'made_up_reason',
+      chat_reply: 'x', itinerary: null, daily_geojson_maps: null,
+    })).toBe(false);
+  });
+
   it.each([
     ['embedded JSON', 'Retry details: {"candidate_plan":{"day":1}}'],
     ['private planning marker', 'The planning_outcome is unavailable.'],

@@ -314,6 +314,7 @@ export interface BudgetCheckUnavailableResponse {
   status: 'budget_check_unavailable';
   reason:
     | 'provider_data_unavailable'
+    | 'provider_quota_exhausted'
     | 'assessment_cache_unavailable'
     | 'assessment_expired_or_invalid'
     | 'destination_resolution_unavailable';
@@ -325,6 +326,8 @@ export interface BudgetCheckUnavailableResponse {
 export type PlanningUnavailableReason =
   | 'validation_failed'
   | 'provider_data_unavailable'
+  // Live search quota used up: retrying right away won't help.
+  | 'provider_quota_exhausted'
   | 'review_unavailable'
   | 'deadline_exhausted';
 
@@ -1414,6 +1417,7 @@ const isEmptyRecord = (value: unknown): value is Record<string, never> =>
 const isPlanningUnavailableReason = (value: unknown): value is PlanningUnavailableReason =>
   value === 'validation_failed'
   || value === 'provider_data_unavailable'
+  || value === 'provider_quota_exhausted'
   || value === 'review_unavailable'
   || value === 'deadline_exhausted';
 
@@ -1441,6 +1445,7 @@ const isInitialBudgetUnavailable = (
   && value.status === 'budget_check_unavailable'
   && (
     value.reason === 'provider_data_unavailable'
+    || value.reason === 'provider_quota_exhausted'
     || value.reason === 'assessment_cache_unavailable'
     || value.reason === 'assessment_expired_or_invalid'
     || value.reason === 'destination_resolution_unavailable'

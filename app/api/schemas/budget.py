@@ -115,6 +115,7 @@ class BudgetCheckUnavailableResponse(BaseModel):
 
     reason: Literal[
         "provider_data_unavailable",
+        "provider_quota_exhausted",
         "assessment_cache_unavailable",
         "assessment_expired_or_invalid",
         "destination_resolution_unavailable",

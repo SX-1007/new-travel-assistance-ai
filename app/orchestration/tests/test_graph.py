@@ -74,6 +74,10 @@ class OwnershipStore:
     def verify(self, session_id, user_id):
         return self.rows.get(session_id) == [user_id, "ready"]
 
+    def touch(self, session_id, user_id):
+        self.touched = [*getattr(self, "touched", []), session_id]
+        return self.rows.get(session_id, [None])[0] == user_id
+
 
 class ChatOnlyFactual:
     """Factual service that routes every message to the agent."""

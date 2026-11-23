@@ -27,6 +27,15 @@ from app.modules.routing.models import (
     GeoJSONFeatureCollection,
     canonicalize_public_daily_maps,
 )
+from app.shared.trip_limits import (
+    MAX_CITIES,
+    MAX_PLACE_NAME_LENGTH,
+    MAX_TRAVELLERS,
+    cities_problem,
+    place_name_problem,
+    travellers_problem,
+    trip_dates_problem,
+)
 from app.shared.types import (
     CountryCode,
     NonEmptyText,
@@ -44,13 +53,13 @@ class InitialFormRequest(BaseModel):
     country: str = Field(
         ...,
         min_length=1,
-        description="Destination country.",
+        description=f"Destination country (at most {MAX_PLACE_NAME_LENGTH} characters).",
     )
 
     city: list[str] = Field(
         default_factory=list,
         description=(
-            "Optional destination states/cities. "
+            f"Optional destination states/cities (at most {MAX_CITIES}). "
             "When omitted, the server resolves "
             "and verifies a planning city before "
             "budget assessment."
@@ -62,7 +71,7 @@ class InitialFormRequest(BaseModel):
         ge=1,
         description=(
             "Number of travellers "
-            "(must be at least 1)."
+            f"(1 to {MAX_TRAVELLERS})."
         ),
     )
 
@@ -109,6 +118,22 @@ class InitialFormRequest(BaseModel):
         ),
     )
 
+    @field_validator("country")
+    @classmethod
+    def validate_country(cls, value: str) -> str:
+        if problem := place_name_problem(value, "The destination country"):
+            raise ValueError(problem)
+
+        return value
+
+    @field_validator("num_people")
+    @classmethod
+    def validate_num_people(cls, value: int) -> int:
+        if problem := travellers_problem(value):
+            raise ValueError(problem)
+
+        return value
+
     @field_validator("city")
     @classmethod
     def validate_city(
@@ -130,6 +155,9 @@ class InitialFormRequest(BaseModel):
                 "Every provided destination "
                 "state/city must be non-empty."
             )
+
+        if problem := cities_problem(cleaned):
+            raise ValueError(problem)
 
         return cleaned
 
@@ -159,10 +187,8 @@ class InitialFormRequest(BaseModel):
         start = _iso_date(self.start_date, "start_date")
         end = _iso_date(self.end_date, "end_date")
 
-        if end < start:
-            raise ValueError(
-                "end_date must be on or after start_date"
-            )
+        if problem := trip_dates_problem(start, end):
+            raise ValueError(problem)
 
         return self
 

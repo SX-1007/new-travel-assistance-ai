@@ -11,7 +11,10 @@ Pipeline for one itinerary:
 4. Duplicates are removed, costs are clamped to the activity and food
    budgets, and activities are projected back into the day skeleton.
 
-Every paid provider search in one plan shares one ``SearchQuota``.
+Every paid provider search in one plan shares one ``SearchQuota``. A
+planning run passes its own quota (``search_quota``), so its attempts all
+draw on one limit. Lookups go day by day (each day's first idea, then each
+day's second, …), so when the limit runs out every day already has places.
 
 With ``ActivityPlanRequest.replan_days`` set, step 1 is skipped: the other
 days keep their activities (no other day may reuse those places) and the
@@ -48,6 +51,7 @@ from app.modules.activities.policies import (
     MIN_PLACES_PER_DAY,
     MAX_SEARCHES_PER_PLAN,
     broad_queries,
+    search_limit_for_trip,
     build_activity,
     clamp_costs,
     exact_query,
@@ -82,6 +86,7 @@ from app.modules.places.policies import (
     text_key,
 )
 from app.modules.places.service import VerifiedPlaceSearch
+from app.shared.exceptions import ProviderQuotaExhausted
 from app.shared.logging import safe_log
 
 
@@ -165,6 +170,11 @@ class _PlanLookups:
         except PlaceSearchQuotaExhausted:
             # Not memoised: nothing was learned about this query.
             return []
+
+        except ProviderQuotaExhausted:
+            # The provider's own searches are used up: every other lookup
+            # would fail too, so the stage stops and says so.
+            raise
 
         except PlaceSearchUnavailable:
             safe_log(logger, logging.WARNING, "activities.search_failed")
@@ -257,7 +267,15 @@ class ActivityPlanningService:
         self._max_workers = max_workers
         self._min_places = min_places_per_day
 
-    def plan(self, request: ActivityPlanRequest) -> ActivityPlanResult:
+    def search_quota(self, *, days: int, pacing: Any, used: int = 0) -> SearchQuota:
+        """One planning run's limit on paid searches, shared by its attempts."""
+
+        return SearchQuota(min(self._max_searches, search_limit_for_trip(days, pacing)), used=used)
+
+    def plan(self, request: ActivityPlanRequest, *, quota: SearchQuota | None = None) -> ActivityPlanResult:
+        """Fill the skeleton. ``quota`` is the run's shared search limit;
+        without one, this call alone may use up to ``max_searches``."""
+
         itinerary = [dict(day) for day in request.itinerary if isinstance(day, Mapping)]
         all_days = expected_day_numbers(itinerary)
         requested = frozenset(request.replan_days) & frozenset(all_days)
@@ -316,7 +334,8 @@ class ActivityPlanningService:
                 searches_used=0,
             )
 
-        quota = SearchQuota(self._max_searches)
+        quota = quota if quota is not None else SearchQuota(self._max_searches)
+        searches_before = quota.used
         lookups = _PlanLookups(places=self._places, areas=areas, quota=quota)
         trusted_cities = tuple(areas)
 
@@ -474,7 +493,8 @@ class ActivityPlanningService:
             safe_log(logger, logging.WARNING, "activities.days_below_target")
 
         logger.info(
-            "activities.search_quota used=%d limit=%d",
+            "activities.search_quota used=%d run_used=%d limit=%d",
+            quota.used - searches_before,
             quota.used,
             quota.limit,
         )
@@ -483,7 +503,7 @@ class ActivityPlanningService:
             itinerary=merge_into_itinerary(itinerary, cleaned),
             missing_days=rescue.missing_days,
             rescue_rounds_used=rescue.rounds_used,
-            searches_used=quota.used,
+            searches_used=quota.used - searches_before,
         )
 
     # ── Internals ───────────────────────────────────────────────────
@@ -511,6 +531,8 @@ class ActivityPlanningService:
 
         if not ideas:
             return {}
+
+        ideas = _day_by_day(ideas)
 
         def lookup(idea: PlaceIdea) -> VerifiedPlace | None:
             place = lookups.exact(idea, country) if mode != "broad" else None
@@ -548,6 +570,29 @@ class ActivityPlanningService:
             safe_log(logger, logging.INFO, "activities.unverified_dropped")
 
         return by_day
+
+
+def _day_by_day(ideas: Sequence[PlaceIdea]) -> list[PlaceIdea]:
+    """Each day's first idea, then each day's second, and so on.
+
+    Lookups run in this order, so a search limit reached part-way leaves
+    every day with some places instead of the last days with none. Each
+    day's own ideas keep their order (their visiting order).
+    """
+
+    queues: dict[int, list[PlaceIdea]] = {}
+
+    for idea in ideas:
+        queues.setdefault(idea.day, []).append(idea)
+
+    ordered: list[PlaceIdea] = []
+    depth = 0
+
+    while len(ordered) < len(ideas):
+        ordered.extend(queue[depth] for queue in queues.values() if depth < len(queue))
+        depth += 1
+
+    return ordered
 
 
 class ActivitySearchService:
@@ -591,6 +636,14 @@ class ActivitySearchService:
 
         try:
             places = self._places.search(full_query, area=area, limit=self._limit)
+
+        except ProviderQuotaExhausted:
+            return {
+                "error": (
+                    "Live place search is used up for now. Tell the user to try "
+                    "again later; retrying now won't help."
+                )
+            }
 
         except PlaceSearchUnavailable:
             return {"error": "Place search failed."}

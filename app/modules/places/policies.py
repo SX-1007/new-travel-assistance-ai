@@ -120,14 +120,21 @@ def choose_locality(
 
 
 class SearchQuota:
-    """Thread-safe hard cap on provider requests for one run."""
+    """Thread-safe hard cap on provider requests for one run.
 
-    def __init__(self, limit: int) -> None:
+    ``used`` starts the count part-way, for a run that continues one whose
+    searches were already counted (see ``workflows/planning.py``).
+    """
+
+    def __init__(self, limit: int, *, used: int = 0) -> None:
         if limit < 0:
             raise ValueError("limit must be non-negative")
 
+        if used < 0:
+            raise ValueError("used must be non-negative")
+
         self._limit = limit
-        self._used = 0
+        self._used = used
         self._lock = Lock()
 
     def try_acquire(self) -> bool:

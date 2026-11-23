@@ -9,7 +9,9 @@ here.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
+from collections.abc import Awaitable, Callable
 from typing import Annotated
 
 from fastapi import (
@@ -20,7 +22,8 @@ from fastapi import (
     status,
 )
 
-from app.api.providers import identity_verifier
+from app.api.providers import Limits, identity_verifier
+from app.api.request_limits import LimitRule
 from app.modules.identity.exceptions import InvalidIdentityToken
 from app.modules.identity.ports import IdentityTokenVerifierPort
 
@@ -76,6 +79,17 @@ CurrentUser = Annotated[
     str,
     Depends(verify_user_token),
 ]
+
+
+def rate_limited(rule: LimitRule) -> Callable[..., Awaitable[str]]:
+    """A dependency that signs the user in, counts this request against
+    ``rule`` (429 when over it) and gives the route the user id."""
+
+    async def check(user_id: CurrentUser, limits: Limits) -> str:
+        await asyncio.to_thread(limits.check, rule, user_id)
+        return user_id
+
+    return check
 
 
 class UserChatContext:

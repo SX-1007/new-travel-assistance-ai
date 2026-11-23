@@ -332,3 +332,31 @@ def test_deleting_a_session_removes_its_checkpoints_and_ownership():
     assert world.history().json()["sessions"] == []
     assert world.say(session, "hi").status_code == 404
     assert world.delete(session).status_code == 404
+
+
+# ── A used-up search quota ──────────────────────────────────────────
+
+
+class UsedUpBudget(Budget):
+    def get_or_create(self, trip):
+        from app.modules.budget.exceptions import BudgetProviderQuotaExhausted
+
+        raise BudgetProviderQuotaExhausted("searches used up")
+
+
+def test_a_used_up_search_quota_is_reported_honestly_on_the_form():
+    body = World(budget=UsedUpBudget()).submit().json()
+
+    assert body["status"] == "budget_check_unavailable"
+    assert body["reason"] == "provider_quota_exhausted"
+    assert "used up" in body["chat_reply"] and "won't help" in body["chat_reply"]
+
+
+def test_a_plan_stopped_by_a_used_up_quota_has_its_own_reason_and_reply():
+    from app.api.presenters.plan import planning_unavailable_message, planning_unavailable_reason
+
+    state = {"planning_issue_codes": ["provider.quota_exhausted"]}
+
+    assert planning_unavailable_reason(state) == "provider_quota_exhausted"
+    assert "used up" in planning_unavailable_message("provider_quota_exhausted")
+    assert planning_unavailable_message("validation_failed") == "Planning is temporarily unavailable. Please retry."

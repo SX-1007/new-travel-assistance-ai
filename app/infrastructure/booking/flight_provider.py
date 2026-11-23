@@ -17,6 +17,7 @@ from urllib.parse import quote_plus
 from pydantic import ValidationError
 
 from app.infrastructure.search.serpapi import (
+    SerpApiQuotaExhausted,
     SerpApiUnavailableError,
 )
 from app.modules.booking.flights import (
@@ -254,6 +255,10 @@ class SerpApiFlightProvider:
                         params
                     )
                 )
+
+            except SerpApiQuotaExhausted:
+                # Not "no flights": the caller must say prices are used up.
+                raise
 
             except (
                 SerpApiUnavailableError

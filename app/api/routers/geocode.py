@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Annotated
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 
-from app.api.dependencies import CurrentUser, RequestId
+from app.api.dependencies import RequestId, rate_limited
+from app.api.request_limits import MAP_PINS
 from app.api.providers import PinLocator
 from app.api.schemas.geocode import GeocodeResponse
 from app.modules.places.exceptions import PlaceSearchUnavailable
@@ -29,7 +31,7 @@ router = APIRouter(tags=["geocode"])
     summary="Resolve a place name/address to Google Maps coordinates",
 )
 async def geocode(
-    user_id: CurrentUser,
+    user_id: Annotated[str, Depends(rate_limited(MAP_PINS))],
     request_id: RequestId,
     locator: PinLocator,
     q: str = Query(..., min_length=3, max_length=300),
@@ -38,7 +40,7 @@ async def geocode(
 ) -> GeocodeResponse:
     """``lat``/``lng`` (both or neither) bias the search area."""
 
-    del user_id  # authentication only
+    del user_id  # sign-in and the pin limit only
     near = (lat, lng) if lat is not None and lng is not None else None
 
     try:

@@ -17,6 +17,12 @@ from langgraph.prebuilt import InjectedState
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from app.orchestration.state import AgentState
+from app.shared.trip_limits import (
+    cities_problem,
+    place_name_problem,
+    travellers_problem,
+    trip_dates_problem,
+)
 
 
 TRIP_DETAIL_FIELDS = (
@@ -57,6 +63,22 @@ class TripDetailsUpdate(BaseModel):
 
         return value
 
+    @field_validator("num_people")
+    @classmethod
+    def _travellers(cls, value: int | None) -> int | None:
+        if value is not None and (problem := travellers_problem(value)):
+            raise ValueError(problem)
+
+        return value
+
+    @field_validator("country", "origin_country")
+    @classmethod
+    def _place_name(cls, value: str | None) -> str | None:
+        if value is not None and (problem := place_name_problem(value, "The country")):
+            raise ValueError(problem)
+
+        return value
+
     @field_validator("city")
     @classmethod
     def _cities(cls, value: list[str] | None) -> list[str] | None:
@@ -68,14 +90,17 @@ class TripDetailsUpdate(BaseModel):
         if not cleaned:
             raise ValueError("city must name at least one place")
 
+        if problem := cities_problem(cleaned):
+            raise ValueError(problem)
+
         return cleaned
 
 
 def validated_trip_updates(state: AgentState, raw: Any) -> dict[str, Any]:
     """The changes that are valid against the current trip and differ from it.
 
-    Returns {} when the payload is invalid, the merged dates are out of
-    order, or nothing would actually change.
+    Returns {} when the payload is invalid, the trip it would make breaks a
+    trip limit (``shared/trip_limits``), or nothing would actually change.
     """
 
     if not isinstance(raw, Mapping):
@@ -84,6 +109,9 @@ def validated_trip_updates(state: AgentState, raw: Any) -> dict[str, Any]:
     try:
         update = TripDetailsUpdate.model_validate(raw)
     except ValidationError:
+        return {}
+
+    if _trip_problem(state, update):
         return {}
 
     return _effective_changes(state, update)
@@ -103,7 +131,9 @@ def update_trip_details(
 
     Pass only the fields that changed. The itinerary is then re-planned
     automatically, so do not call edit_itinerary for these changes. Dates use
-    YYYY-MM-DD; num_people is at least 1.
+    YYYY-MM-DD; num_people is 1 to 9. A trip is at most 14 days, starts no
+    earlier than today and ends within about 330 days; at most 5 cities. If
+    the result is an error, tell the user what to change.
     """
 
     raw = {
@@ -129,14 +159,17 @@ def update_trip_details(
     changes = _effective_changes(state, update)
 
     if not changes:
-        if _dates_out_of_order(state, update):
-            return {"error": "end_date must be on or after start_date."}
-
         # Re-planning the same trip would repeat every paid search.
         return {
             "status": "unchanged",
             "message": "The trip already has these details; nothing needs re-planning.",
         }
+
+    if problem := _trip_problem(state, update):
+        # Checked on the whole trip after the change: a new end date alone
+        # can make it too long, and a trip whose start has passed can't be
+        # re-planned whatever changes.
+        return {"error": f"Invalid trip details: {problem}"}
 
     return {
         "status": "accepted",
@@ -151,9 +184,6 @@ def update_trip_details(
 
 
 def _effective_changes(state: AgentState, update: TripDetailsUpdate) -> dict[str, Any]:
-    if _dates_out_of_order(state, update):
-        return {}
-
     requested = update.model_dump(exclude_none=True)
 
     return {
@@ -175,17 +205,19 @@ def _comparable(value: Any) -> Any:
     return value
 
 
-def _dates_out_of_order(state: AgentState, update: TripDetailsUpdate) -> bool:
+def _trip_problem(state: AgentState, update: TripDetailsUpdate) -> str | None:
+    """Why the trip as it would be after ``update`` can't be planned, or None."""
+
     start = update.start_date or state.start_date
     end = update.end_date or state.end_date
 
     if not start or not end:
-        return False
+        return None
 
     try:
-        return date.fromisoformat(end) < date.fromisoformat(start)
+        return trip_dates_problem(date.fromisoformat(start), date.fromisoformat(end))
     except ValueError:
-        return False
+        return "The trip's saved dates are not valid YYYY-MM-DD dates."
 
 
 __all__ = [

@@ -1,7 +1,11 @@
 """LangGraph checkpoint persistence.
 
-Read side: chat-history reads over the main sync pool (safe there because
-the saver opens its own ``dict_row`` cursors).
+Read side: chat history over the main sync pool (safe there because the
+saver opens its own ``dict_row`` cursors). The user's sessions come from
+the ownership table, newest change first, by its ``(user_id, updated_at)``
+index; then only those sessions' latest checkpoints are loaded, each by
+its primary key. (Before, every user's checkpoints were searched by a JSON
+metadata field with no index.)
 
 Write side: the graph's ``AsyncPostgresSaver`` on its own autocommit pool
 (``infrastructure/database/checkpoint_pool.py``). ``setup_checkpointer``
@@ -14,68 +18,44 @@ from __future__ import annotations
 
 import asyncio
 import logging
-
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from typing import (
-    Any,
-    Dict,
-    Generator,
-    List,
-    Optional,
-)
+from typing import Any, Final, Protocol
 
 from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from psycopg import OperationalError
 from psycopg.errors import DuplicateColumn, DuplicateObject, DuplicateTable
-from psycopg.rows import dict_row
-from psycopg.types.json import Jsonb
 
-from app.infrastructure.database.postgres import (
-    get_connection,
-)
+from app.infrastructure.database.postgres import get_connection
 from app.shared.logging import safe_log
 from app.shared.observability import log_event
 
 
 logger = logging.getLogger(__name__)
 
+MAX_HISTORY_SESSIONS: Final = 20
+_LOAD_WORKERS: Final = 4
+
+
+class RecentSessions(Protocol):
+    def recent_sessions(self, user_id: str, limit: int) -> list[str]: ...
+
 
 @contextmanager
-def get_checkpointer() -> Generator[
-    PostgresSaver,
-    None,
-    None,
-]:
+def get_checkpointer() -> Iterator[PostgresSaver]:
     """Yield a read-only-use PostgresSaver backed by one pooled connection."""
+
     with get_connection() as conn:
-        yield PostgresSaver(
-            conn=conn
-        )
+        yield PostgresSaver(conn=conn)
 
 
-def _load_chat_history_checkpoint(
-    row: Dict[str, Any],
-) -> Optional[Dict[str, Any]]:
-    """Load one persisted checkpoint using its own pooled connection."""
-    with get_connection() as conn:
-        saver = PostgresSaver(
-            conn=conn
-        )
+def _load_latest_checkpoint(session_id: str) -> dict[str, Any] | None:
+    """One session's newest checkpoint, on its own pooled connection."""
 
-        saved = saver.get_tuple(
-            {
-                "configurable": {
-                    "thread_id":
-                        row["thread_id"],
-                    "checkpoint_ns":
-                        row["checkpoint_ns"],
-                    "checkpoint_id":
-                        row["checkpoint_id"],
-                }
-            }
-        )
+    with get_checkpointer() as saver:
+        saved = saver.get_tuple({"configurable": {"thread_id": session_id, "checkpoint_ns": ""}})
 
     if saved is None:
         return None
@@ -83,117 +63,42 @@ def _load_chat_history_checkpoint(
     checkpoint = saved.checkpoint
 
     return {
-        "session_id":
-            row["thread_id"],
-        "updated_at":
-            checkpoint.get(
-                "ts",
-                "",
-            ),
-        "state":
-            checkpoint.get(
-                "channel_values",
-                {},
-            )
-            or {},
+        "session_id": session_id,
+        "updated_at": checkpoint.get("ts", ""),
+        "state": checkpoint.get("channel_values", {}) or {},
     }
 
 
 def fetch_chat_history_checkpoints(
     user_id: str,
     limit: int = 10,
-) -> List[Dict[str, Any]]:
-    """Return the newest persisted LangGraph state for each user session."""
+    *,
+    sessions: RecentSessions,
+    load: Callable[[str], dict[str, Any] | None] = _load_latest_checkpoint,
+) -> list[dict[str, Any]]:
+    """The newest persisted state of each of the user's sessions, newest first.
+
+    A session listed without any checkpoint (its first plan is still being
+    written, or was deleted meanwhile) is left out.
+    """
+
     if not user_id:
         return []
 
-    safe_limit = max(
-        1,
-        min(
-            int(limit),
-            20,
-        ),
-    )
+    session_ids = sessions.recent_sessions(user_id, max(1, min(int(limit), MAX_HISTORY_SESSIONS)))
 
-    with get_connection() as conn:
-        with conn.cursor(
-            row_factory=dict_row
-        ) as cur:
-            cur.execute(
-                """
-                SELECT
-                    thread_id,
-                    checkpoint_ns,
-                    checkpoint_id
-                FROM (
-                    SELECT DISTINCT ON (thread_id)
-                        thread_id,
-                        checkpoint_ns,
-                        checkpoint_id
-                    FROM checkpoints
-                    WHERE checkpoint_ns = ''
-                      AND metadata @> %s
-                    ORDER BY
-                        thread_id,
-                        checkpoint_id DESC
-                ) AS latest
-                ORDER BY checkpoint_id DESC
-                LIMIT %s
-                """,
-                (
-                    Jsonb(
-                        {
-                            "user_id":
-                                user_id,
-                        }
-                    ),
-                    safe_limit,
-                ),
-            )
-
-            rows = cur.fetchall()
-
-    if not rows:
+    if not session_ids:
         return []
 
-    worker_count = min(
-        4,
-        len(rows),
-    )
-
     try:
-        with ThreadPoolExecutor(
-            max_workers=worker_count
-        ) as executor:
-
-            futures = [
-                executor.submit(
-                    _load_chat_history_checkpoint,
-                    row,
-                )
-                for row in rows
-            ]
-
-            return [
-                record
-                for future in futures
-                if (
-                    record :=
-                    future.result()
-                )
-                is not None
-            ]
+        with ThreadPoolExecutor(max_workers=min(_LOAD_WORKERS, len(session_ids))) as executor:
+            records = list(executor.map(load, session_ids))
 
     except Exception:
-        safe_log(
-            logger,
-            logging.ERROR,
-            (
-                "orchestration.checkpoints."
-                "history_fetch_failed"
-            ),
-        )
+        safe_log(logger, logging.ERROR, "orchestration.checkpoints.history_fetch_failed")
         raise
+
+    return [record for record in records if record is not None]
 
 
 # ── Write side: the graph's saver ───────────────────────────────────
@@ -303,6 +208,8 @@ async def _record_next_migration(saver: AsyncPostgresSaver) -> bool:
 
 
 __all__ = [
+    "MAX_HISTORY_SESSIONS",
+    "RecentSessions",
     "ResilientAsyncPostgresSaver",
     "fetch_chat_history_checkpoints",
     "get_checkpointer",

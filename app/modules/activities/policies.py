@@ -35,8 +35,15 @@ MIN_PLACES_PER_DAY: Final = 3
 # Round 1 retries specific places; round 2 also broadens to generic searches.
 MAX_RESCUE_ROUNDS: Final = 2
 
-# Hard cap on PAID provider searches for one plan. Cache hits are free.
-MAX_SEARCHES_PER_PLAN: Final = 40
+# Paid place searches for ONE planning run: every attempt and rescue round
+# shares them, and cache hits are free. Sized from the trip: one search per
+# place its days can hold, plus a quarter for rescue rounds and retried
+# days, never fewer than MIN or more than MAX. A 3-day moderate trip gets
+# 19, a 5-day one 32; a 14-day trip gets the maximum, and lookups go day by
+# day so no day is left without places when the limit is reached.
+SEARCH_HEADROOM: Final = 1.25
+MIN_SEARCHES_PER_PLAN: Final = 10
+MAX_SEARCHES_PER_PLAN: Final = 60
 
 LOOKUP_WORKERS: Final = 4
 
@@ -96,6 +103,13 @@ def places_per_day(pacing: Any) -> int:
     """The pacing's daily cap; an unknown pacing counts as moderate."""
 
     return PLACES_PER_DAY_BY_PACING.get(pacing, PLACES_PER_DAY_BY_PACING["moderate"])
+
+
+def search_limit_for_trip(days: int, pacing: Any) -> int:
+    """Paid searches one planning run of a ``days``-day trip may use."""
+
+    wanted = math.ceil(max(days, 1) * places_per_day(pacing) * SEARCH_HEADROOM)
+    return min(MAX_SEARCHES_PER_PLAN, max(MIN_SEARCHES_PER_PLAN, wanted))
 
 
 def place_type_for(category: Any) -> PlaceType:
@@ -439,6 +453,8 @@ __all__ = [
     "MIN_PLACES_PER_DAY",
     "MAX_RESCUE_ROUNDS",
     "MAX_SEARCHES_PER_PLAN",
+    "MIN_SEARCHES_PER_PLAN",
+    "SEARCH_HEADROOM",
     "RESTAURANT_ALIASES",
     "activities_cost",
     "broad_queries",
@@ -453,6 +469,7 @@ __all__ = [
     "itinerary_dates",
     "merge_into_itinerary",
     "place_type_for",
+    "search_limit_for_trip",
     "places_per_day",
     "preferences_from_profile",
     "trusted_ideas",

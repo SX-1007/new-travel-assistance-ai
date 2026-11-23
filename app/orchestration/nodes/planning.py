@@ -20,6 +20,7 @@ import copy
 import logging
 import time
 from collections.abc import Mapping, Sequence
+from concurrent.futures import Executor
 from dataclasses import dataclass
 from typing import Any
 
@@ -92,6 +93,9 @@ class PlanningServices:
     routes: DailyRouteService
     currency: CurrencyProviderPort
     budget: BudgetAssessmentService
+    # Planning's own threads, so long plans never fill the shared pool that
+    # health checks and short reads use. None: the event loop's default.
+    executor: Executor | None = None
 
 
 # ── Setup ───────────────────────────────────────────────────────────
@@ -202,6 +206,7 @@ async def execute_validated_transaction_node(
         routes=planning.routes,
         user_profile=profile,
         log_context=log_context,
+        executor=planning.executor,
     )
 
 

@@ -13,6 +13,8 @@ from pydantic import (
 PlanningUnavailableReason = Literal[
     "validation_failed",
     "provider_data_unavailable",
+    # A paid search provider's quota is used up: retrying soon won't help.
+    "provider_quota_exhausted",
     "review_unavailable",
     "deadline_exhausted",
 ]
