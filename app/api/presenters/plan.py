@@ -18,6 +18,12 @@ from app.modules.itinerary.models import DailyItinerary
 from app.modules.itinerary.validators import validate_itinerary_candidate
 from app.modules.routing.models import GeoJSONFeatureCollection, canonicalize_daily_map_keys
 from app.orchestration.nodes.replies import QUOTA_EXHAUSTED_ISSUE, QUOTA_NEW_PLAN_TEXT
+from app.orchestration.plan_admission import (
+    ALREADY_RUNNING_ISSUE,
+    CAPACITY_FULL_ISSUE,
+    LIMIT_REACHED_ISSUE,
+    LIMITS_UNAVAILABLE_ISSUE,
+)
 from app.orchestration.planning_requirements import build_trip_requirements
 from app.orchestration.state import AgentState
 from app.shared.text import content_text
@@ -116,6 +122,12 @@ def planning_unavailable_reason(state: Mapping[str, Any]) -> PlanningUnavailable
         for code in (*(state.get("planning_issue_codes") or ()), *(state.get("output_review_issue_codes") or ()))
         if isinstance(code, str)
     ]
+
+    if any(code in (LIMIT_REACHED_ISSUE, ALREADY_RUNNING_ISSUE) for code in codes):
+        return "request_limit_reached"
+
+    if any(code in (CAPACITY_FULL_ISSUE, LIMITS_UNAVAILABLE_ISSUE) for code in codes):
+        return "planning_busy"
 
     if any(code.endswith(QUOTA_EXHAUSTED_ISSUE) for code in codes):
         return "provider_quota_exhausted"

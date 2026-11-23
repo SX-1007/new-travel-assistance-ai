@@ -57,10 +57,7 @@ def test_trivial_message_skips_llm():
 
 
 def test_traits_are_routed_to_both_stores():
-    memory = LongTermMemory(
-        home_country="Malaysia",
-        dietary_restrictions=["User is vegan."],
-    )
+    memory = LongTermMemory(dietary_restrictions=["User is vegan."])
     service = FakeMemoryService()
 
     result = run_memory_extraction_task(
@@ -71,9 +68,7 @@ def test_traits_are_routed_to_both_stores():
     )
 
     assert result == {"memory_updated": True}
-    assert service.relational == [
-        {"home_country": "Malaysia", "dietary_restrictions": ["User is vegan."]}
-    ]
+    assert service.relational == [{"dietary_restrictions": ["User is vegan."]}]
     assert service.vector == [{"dietary": ["User is vegan."]}]
 
 
@@ -86,50 +81,29 @@ def _run(memory, service):
     )
 
 
-@pytest.mark.parametrize("country", ["Malaysia", "MY", "MYS", "UK", "  Japan  "])
-def test_recognised_home_country_is_saved(country):
+def test_the_extractor_is_never_asked_for_a_home_location():
+    # Every new trip flies from the profile's home: only the profile screen
+    # may change it, never a remark in chat.
+    assert not {"home_country", "home_state"} & set(LongTermMemory.model_fields)
+    assert "home_country" not in extraction._EXTRACTION_PROMPT.messages[0].prompt.template
+
+
+def test_a_home_location_in_the_model_output_is_never_saved():
     service = FakeMemoryService()
-
-    result = _run(LongTermMemory(home_country=country, home_state="Selangor"), service)
-
-    assert result == {"memory_updated": True}
-    assert service.relational == [
-        {"home_country": country.strip(), "home_state": "Selangor"}
-    ]
-
-
-@pytest.mark.parametrize("country", ["Narnia", "Mars", "Malasia", "   "])
-def test_unknown_home_country_is_not_saved(country):
-    service = FakeMemoryService()
-
-    result = _run(LongTermMemory(home_country=country), service)
-
-    assert result == {"memory_updated": False}
-    assert service.relational == []
-    assert service.vector == []
-
-
-def test_unknown_home_country_drops_its_state_but_keeps_other_traits(caplog):
-    service = FakeMemoryService()
-    memory = LongTermMemory(
-        home_country="Narnia",
-        home_state="Lantern Waste",
-        travel_pacing="relaxed",
+    memory = LongTermMemory.model_validate(
+        {"home_country": "Singapore", "home_state": "Central", "travel_pacing": "relaxed"}
     )
 
-    with caplog.at_level("WARNING"):
-        result = _run(memory, service)
+    result = _run(memory, service)
 
     assert result == {"memory_updated": True}
     assert service.relational == [{"travel_pacing": "relaxed"}]
-    assert service.vector == [{"travel_pacing": ["relaxed"]}]
-    assert "memory.extractor.home_country_rejected" in caplog.text
-    assert "Narnia" not in caplog.text
 
 
-def test_state_without_a_country_is_still_saved():
+def test_a_message_with_only_a_home_location_saves_nothing():
     service = FakeMemoryService()
 
-    _run(LongTermMemory(home_state="  Selangor "), service)
+    result = _run(LongTermMemory.model_validate({"home_country": "Singapore"}), service)
 
-    assert service.relational == [{"home_state": "Selangor"}]
+    assert result == {"memory_updated": False}
+    assert service.relational == [] and service.vector == []

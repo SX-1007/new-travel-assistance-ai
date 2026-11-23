@@ -7,6 +7,11 @@ index; then only those sessions' latest checkpoints are loaded, each by
 its primary key. (Before, every user's checkpoints were searched by a JSON
 metadata field with no index.)
 
+Both sides load checkpoints with ``checkpoint_serializer()``: strict, so a
+stored value can only revive the types LangGraph lists as safe (dates,
+LangChain messages, …), never an arbitrary class named in the data. Our
+state holds nothing else (plain dicts, lists, strings and numbers).
+
 Write side: the graph's ``AsyncPostgresSaver`` on its own autocommit pool
 (``infrastructure/database/checkpoint_pool.py``). ``setup_checkpointer``
 creates and migrates its tables at startup; ``setup()`` runs
@@ -25,6 +30,7 @@ from typing import Any, Final, Protocol
 
 from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from psycopg import OperationalError
 from psycopg.errors import DuplicateColumn, DuplicateObject, DuplicateTable
 
@@ -43,12 +49,19 @@ class RecentSessions(Protocol):
     def recent_sessions(self, user_id: str, limit: int) -> list[str]: ...
 
 
+def checkpoint_serializer() -> JsonPlusSerializer:
+    """The strict checkpoint serializer (``allowed_msgpack_modules=None``:
+    only LangGraph's safe types are rebuilt on load)."""
+
+    return JsonPlusSerializer(allowed_msgpack_modules=None)
+
+
 @contextmanager
 def get_checkpointer() -> Iterator[PostgresSaver]:
     """Yield a read-only-use PostgresSaver backed by one pooled connection."""
 
     with get_connection() as conn:
-        yield PostgresSaver(conn=conn)
+        yield PostgresSaver(conn=conn, serde=checkpoint_serializer())
 
 
 def _load_latest_checkpoint(session_id: str) -> dict[str, Any] | None:
@@ -209,6 +222,7 @@ async def _record_next_migration(saver: AsyncPostgresSaver) -> bool:
 
 __all__ = [
     "MAX_HISTORY_SESSIONS",
+    "checkpoint_serializer",
     "RecentSessions",
     "ResilientAsyncPostgresSaver",
     "fetch_chat_history_checkpoints",

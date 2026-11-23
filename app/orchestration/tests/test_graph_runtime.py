@@ -86,9 +86,24 @@ def test_config_carries_the_owner_for_the_nodes_and_the_checkpoint():
     asyncio.run(new_trip(app, request_id="req-9"))
 
     config = workflow.calls[0][1]
-    assert config["configurable"] == {"thread_id": "t", "__user_id": "user-1", "request_id": "req-9"}
+    # The API admitted the new trip: the planning node must not count it again.
+    assert config["configurable"] == {
+        "thread_id": "t",
+        "__user_id": "user-1",
+        "request_id": "req-9",
+        "plan_admitted": True,
+    }
     assert config["metadata"]["user_id"] == "user-1"
     assert config["recursion_limit"] == 50
+
+
+def test_a_chat_turn_is_never_marked_as_admitted():
+    workflow = Workflow()
+    app, _ = runtime(workflow, Checkpoints(saved=checkpoint({"plan_revision": 1})))
+
+    asyncio.run(chat(app))
+
+    assert "plan_admitted" not in workflow.calls[-1][1]["configurable"]
 
 
 @pytest.mark.parametrize(

@@ -191,3 +191,23 @@ def test_the_container_gives_planning_a_small_pool_of_its_own():
     finally:
         pool.shutdown(wait=False)
         container.get_planning_executor.cache_clear()
+
+
+# ── .env.example ────────────────────────────────────────────────────
+
+
+def test_the_env_example_lists_every_setting():
+    # A new machine's checklist: a setting added to Settings must be added
+    # there too.
+    import re
+    from pathlib import Path
+
+    example = Path(__file__).resolve().parents[3] / ".env.example"
+    listed = {
+        match.group(1)
+        for line in example.read_text(encoding="utf-8").splitlines()
+        if (match := re.match(r"#?\s*([A-Z][A-Z0-9_]*)=", line))
+    }
+
+    assert set(Settings.model_fields) <= listed
+    assert {"CORS_ORIGINS", "LOG_LEVEL", "APP_VERSION"} <= listed

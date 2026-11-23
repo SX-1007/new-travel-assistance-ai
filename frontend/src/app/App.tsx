@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useId, useRef } from 'react';
 import {
   Plane, Map, Calendar, Compass, MessageSquare, Menu, Settings,
   User, Paperclip, Send, MapPin, Plus, History, Sunrise, ChevronRight, X,
@@ -231,6 +231,8 @@ const NewTripForm = ({
   submitting: boolean;
   error: string | null;
 }) => {
+  // Each label names its own input (screen readers; clicking a label focuses it).
+  const fieldId = useId();
   const [country, setCountry] = useState('');
   const [city, setCity] = useState('');
   const [numPeople, setNumPeople] = useState(1);
@@ -430,10 +432,11 @@ const NewTripForm = ({
           <div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
-                <label className={labelClass}>
+                <label htmlFor={`${fieldId}-country`} className={labelClass}>
                   <Globe size={13} /> Destination country
                 </label>
                 <input
+                  id={`${fieldId}-country`}
                   value={country}
                   onChange={(e) => {
                     invalidateBudgetDecision();
@@ -444,10 +447,11 @@ const NewTripForm = ({
                 />
               </div>
               <div>
-                <label className={labelClass}>
+                <label htmlFor={`${fieldId}-city`} className={labelClass}>
                   <MapPin size={13} /> Destination state / city (optional)
                 </label>
                 <input
+                  id={`${fieldId}-city`}
                   value={city}
                   onChange={(e) => {
                     invalidateBudgetDecision();
@@ -462,10 +466,10 @@ const NewTripForm = ({
 
           {/* Travel dates */}
           <div>
-            <label className={labelClass}>
+            <span id={`${fieldId}-dates`} className={labelClass}>
               <Calendar size={13} /> Travel dates
-            </label>
-            <div className="grid grid-cols-2 gap-4">
+            </span>
+            <div role="group" aria-labelledby={`${fieldId}-dates`} className="grid grid-cols-2 gap-4">
               <input
                 type="date"
                 value={startDate}
@@ -492,10 +496,11 @@ const NewTripForm = ({
           {/* Budget + travellers */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
-              <label className={labelClass}>
+              <label htmlFor={`${fieldId}-budget`} className={labelClass}>
                 <DollarSign size={13} /> Total budget
               </label>
               <input
+                id={`${fieldId}-budget`}
                 type="number"
                 min={1}
                 step="any"
@@ -523,10 +528,11 @@ const NewTripForm = ({
               </label>
             </div>
             <div>
-              <label className={labelClass}>
+              <label htmlFor={`${fieldId}-travellers`} className={labelClass}>
                 <Users size={13} /> Travellers
               </label>
               <input
+                id={`${fieldId}-travellers`}
                 type="number"
                 min={1}
                 max={MAX_TRAVELLERS}
@@ -707,14 +713,32 @@ const NewTripForm = ({
   );
 };
 
-// --- ONBOARDING (one-time profile: Name / Origin Country / State) ---
+// --- ONBOARDING / PROFILE (Name / Home Country / State) ---
 // Captured once and persisted to the backend (POST /api/profile) BEFORE any
 // trip planning. The trip form then no longer asks for the user's origin.
-const OnboardingScreen = ({ onComplete }: { onComplete: (homeCountry: string) => void }) => {
+// The same screen edits the profile later (``initial`` + ``onCancel``): the
+// home location changes only here, never from something said in chat.
+export interface ProfileDraft {
+  name: string;
+  home_country: string;
+  home_state: string;
+}
+
+const OnboardingScreen = ({
+  onComplete,
+  initial,
+  onCancel,
+}: {
+  onComplete: (homeCountry: string, saved: ProfileDraft) => void;
+  initial?: ProfileDraft;
+  onCancel?: () => void;
+}) => {
   const auth = useAuth();
-  const [name, setName] = useState('');
-  const [originCountry, setOriginCountry] = useState('');
-  const [originState, setOriginState] = useState('');
+  const editing = initial !== undefined;
+  const fieldId = useId();
+  const [name, setName] = useState(initial?.name ?? '');
+  const [originCountry, setOriginCountry] = useState(initial?.home_country ?? '');
+  const [originState, setOriginState] = useState(initial?.home_state ?? '');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -737,7 +761,11 @@ const OnboardingScreen = ({ onComplete }: { onComplete: (homeCountry: string) =>
         origin_country: originCountry.trim(),
         origin_state: originState.trim(),
       });
-      onComplete(originCountry.trim());
+      onComplete(originCountry.trim(), {
+        name: name.trim(),
+        home_country: originCountry.trim(),
+        home_state: originState.trim(),
+      });
     } catch (e2) {
       setErr(
         e2 instanceof ApiError
@@ -756,26 +784,30 @@ const OnboardingScreen = ({ onComplete }: { onComplete: (homeCountry: string) =>
           <div className="mx-auto mb-4 flex h-14 w-14 rotate-3 items-center justify-center rounded-2xl bg-blue-100 text-blue-600">
             <Plane size={28} className="fill-current" />
           </div>
-          <h1 className="text-2xl font-bold text-slate-800">Welcome to Wander AI</h1>
+          <h1 className="text-2xl font-bold text-slate-800">
+            {editing ? 'Your profile' : 'Welcome to Wander AI'}
+          </h1>
           <p className="mt-1 text-sm text-slate-500">
-            Tell us a little about you. We'll remember it so you don't have to enter it for every trip.
+            {editing
+              ? 'New trips fly from your home country. Change it here if you have moved.'
+              : "Tell us a little about you. We'll remember it so you don't have to enter it for every trip."}
           </p>
         </div>
 
         <form onSubmit={submit} className="space-y-4 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
           <div>
-            <label className={labelClass}><User size={13} /> Your name</label>
-            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Alex Tan" className={inputClass} />
+            <label htmlFor={`${fieldId}-name`} className={labelClass}><User size={13} /> Your name</label>
+            <input id={`${fieldId}-name`} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Alex Tan" className={inputClass} />
           </div>
           <div>
-            <label className={labelClass}><Home size={13} /> Home country</label>
-            <input value={originCountry} onChange={(e) => setOriginCountry(e.target.value)} placeholder="e.g. Malaysia" className={inputClass} />
+            <label htmlFor={`${fieldId}-country`} className={labelClass}><Home size={13} /> Home country</label>
+            <input id={`${fieldId}-country`} value={originCountry} onChange={(e) => setOriginCountry(e.target.value)} placeholder="e.g. Malaysia" className={inputClass} />
           </div>
           <div>
-            <label className={labelClass}>
+            <label htmlFor={`${fieldId}-state`} className={labelClass}>
               <MapPin size={13} /> Home state / province
             </label>
-            <input value={originState} onChange={(e) => setOriginState(e.target.value)} placeholder="e.g. Selangor" className={inputClass} />
+            <input id={`${fieldId}-state`} value={originState} onChange={(e) => setOriginState(e.target.value)} placeholder="e.g. Selangor" className={inputClass} />
           </div>
 
           {err && (
@@ -790,11 +822,25 @@ const OnboardingScreen = ({ onComplete }: { onComplete: (homeCountry: string) =>
             disabled={busy}
             className="flex w-full items-center justify-center gap-2 rounded-lg bg-blue-600 py-2.5 font-medium text-white transition-colors hover:bg-blue-700 disabled:bg-slate-300"
           >
-            {busy ? (<><Loader2 size={18} className="animate-spin" /> Saving…</>) : (<>Continue <ChevronRight size={18} /></>)}
+            {busy
+              ? (<><Loader2 size={18} className="animate-spin" /> Saving…</>)
+              : editing
+                ? 'Save'
+                : (<>Continue <ChevronRight size={18} /></>)}
           </button>
+          {onCancel && (
+            <button
+              type="button"
+              onClick={onCancel}
+              disabled={busy}
+              className="w-full rounded-lg border border-slate-200 py-2.5 font-medium text-slate-600 transition-colors hover:bg-slate-50 disabled:opacity-50"
+            >
+              Cancel
+            </button>
+          )}
         </form>
 
-        {auth && (
+        {auth && !editing && (
           <p className="mt-4 text-center text-sm text-slate-500">
             Signed in as {auth.user.email || auth.user.displayName}.{' '}
             <button type="button" onClick={auth.signOut} className="font-medium text-blue-600 hover:underline">
@@ -826,6 +872,9 @@ export default function App() {
   const [sessionId, setSessionId] = useState<string>(() => newSessionId());
 // null = still checking; false = must onboard; true = ready to use the app.
 const [onboarded, setOnboarded] = useState<boolean | null>(null);
+// The saved profile, for the "Profile" screen; editingProfile shows it.
+const [profile, setProfile] = useState<ProfileDraft | null>(null);
+const [editingProfile, setEditingProfile] = useState(false);
 // A profile-read failure is different from a confirmed missing profile.
 // Keep the user behind a retryable verification screen instead of incorrectly
 // sending an existing user back to onboarding.
@@ -1041,6 +1090,13 @@ const [historyLoaded, setHistoryLoaded] = useState(false);
         }
         setOnboarded(isOnboarded);
         setHomeCountry(String(r.profile?.home_country ?? ''));
+        setProfile(isOnboarded
+          ? {
+            name: String(r.profile?.name ?? ''),
+            home_country: String(r.profile?.home_country ?? ''),
+            home_state: String(r.profile?.home_state ?? ''),
+          }
+          : null);
         if (isOnboarded) {
           setHistorySyncRevision((revision) => revision + 1);
         }
@@ -1457,10 +1513,24 @@ const [historyLoaded, setHistoryLoaded] = useState(false);
   if (!onboarded) {
     return (
       <OnboardingScreen
-        onComplete={(hc) => {
+        onComplete={(hc, saved) => {
           setHomeCountry(hc);
+          setProfile(saved);
           setHistoryLoaded(false);
           setOnboarded(true);
+        }}
+      />
+    );
+  }
+  if (editingProfile && profile) {
+    return (
+      <OnboardingScreen
+        initial={profile}
+        onCancel={() => setEditingProfile(false)}
+        onComplete={(hc, saved) => {
+          setHomeCountry(hc);
+          setProfile(saved);
+          setEditingProfile(false);
         }}
       />
     );
@@ -1596,6 +1666,19 @@ const [historyLoaded, setHistoryLoaded] = useState(false);
             <div className="text-xs font-medium px-2.5 py-1.5 bg-blue-50 text-blue-600 rounded-full border border-blue-100 hidden md:block">
               Wander-Pro Model
             </div>
+
+            {profile && (
+              <button
+                type="button"
+                onClick={() => setEditingProfile(true)}
+                title={profile.home_country ? `Home: ${profile.home_country}` : undefined}
+                aria-label="Profile"
+                className="flex items-center gap-1.5 rounded-full border border-slate-200 px-3 py-1.5 text-sm font-semibold text-slate-600 transition-colors hover:bg-slate-50"
+              >
+                <User size={16} />
+                <span className="hidden sm:inline">Profile</span>
+              </button>
+            )}
 
             {auth && (
               <button

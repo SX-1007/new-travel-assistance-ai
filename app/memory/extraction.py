@@ -1,7 +1,7 @@
 """Long-term memory extraction from one chat message.
 
 A model reads the user's latest message and returns only lasting traits
-(home, travel pacing, diet, interests, lodging style). They are saved in two
+(travel pacing, diet, interests, lodging style). They are saved in two
 places at once: the profile row (``user_profiles``) and the embedded
 preference store (``mem0_vector``, searched by meaning).
 
@@ -10,8 +10,10 @@ call is retried with backoff, at most ``MAX_LLM_RETRIES`` calls per message.
 The chat model is injected (``build_extraction_chain``); nothing here reads
 settings.
 
-A ``home_country`` learned from chat must pass the same check as onboarding
-before it is saved (``_home_updates``).
+Home country and state are never learned from chat. Every new trip's
+flights start from them, so a remark like "I'm in Singapore this week" must
+not quietly move the user's home; they change only through the profile
+(``POST /api/profile``), where the user sees and confirms them.
 """
 
 from __future__ import annotations
@@ -31,7 +33,6 @@ from langchain_core.output_parsers.openai_tools import PydanticToolsParser
 
 from app.memory.observability import log_memory_event
 from app.memory.service import MemoryService
-from app.shared.countries import country_alpha2
 
 __all__ = [
     "LongTermMemory",
@@ -59,14 +60,6 @@ _TRIVIAL_RE = re.compile(
 class LongTermMemory(BaseModel):
     """Permanent user traits stored in the relational profile and vector DB."""
 
-    home_country: Optional[str] = Field(
-        default=None,
-        description="The permanent home country of the user.",
-    )
-    home_state: Optional[str] = Field(
-        default=None,
-        description="The permanent home state or province of the user.",
-    )
     travel_pacing: Optional[str] = Field(
         default=None,
         description="Permanent travel speed preference (e.g., 'relaxed', 'packed schedule', 'moderate').",
@@ -103,8 +96,8 @@ User: "I'm allergic to peanuts, I love history, and I only stay in 5-star hotels
 → interests: ["User loves history."]
 → accommodation_preferences: ["User only stays in 5-star hotels."]
 
-User: "I live in Selangor, Malaysia, and I like a relaxed pace when traveling."
-→ home_country: "Malaysia", home_state: "Selangor", travel_pacing: "relaxed"
+User: "I like a relaxed pace when traveling."
+→ travel_pacing: "relaxed"
 
 User: "Can you find a hotel with a gym for next week?"
 → All fields null.
@@ -162,41 +155,12 @@ def _has_long_term_traits(
 
     return any(
         (
-            bool(memory.home_country),
-            bool(memory.home_state),
             bool(memory.travel_pacing),
             bool(memory.dietary_restrictions),
             bool(memory.interests),
             bool(memory.accommodation_preferences),
         )
     )
-
-
-def _home_updates(memory: LongTermMemory) -> Dict[str, Any]:
-    """The home country and state to save, checked like onboarding.
-
-    The country must pass the same ``country_alpha2`` check as
-    ``POST /api/profile/``: every trip starts from it, so an unknown one would
-    fail each later budget check. A rejected country also drops the state
-    extracted with it, since that described the same place and, saved alone,
-    would be paired with the old country.
-    """
-
-    updates: Dict[str, Any] = {}
-    country = (memory.home_country or "").strip()
-    state = (memory.home_state or "").strip()
-
-    if country:
-        if country_alpha2(country) is None:
-            log_memory_event(logger, "memory.extractor.home_country_rejected")
-            return updates
-
-        updates["home_country"] = country
-
-    if state:
-        updates["home_state"] = state
-
-    return updates
 
 
 def _update_relational_db(
@@ -337,7 +301,7 @@ def run_memory_extraction_task(
         return {"memory_updated": False}
 
     # Every trait goes to the profile row.
-    relational_updates: Dict[str, Any] = _home_updates(extracted_data)
+    relational_updates: Dict[str, Any] = {}
 
     if extracted_data.travel_pacing:
         relational_updates["travel_pacing"] = extracted_data.travel_pacing

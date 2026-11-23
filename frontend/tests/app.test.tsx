@@ -190,13 +190,13 @@ describe('App end-to-end component flows', () => {
   it('submits trimmed onboarding fields and unlocks the main interface', async () => {
     apiMocks.getProfile.mockResolvedValue({ status: 'success', onboarded: false, profile: {} });
     render(<App />);
-    fireEvent.change(await screen.findByPlaceholderText('e.g. Alex Tan'), {
+    fireEvent.change(await screen.findByLabelText(/Your name/), {
       target: { value: '  Alex  ' },
     });
-    fireEvent.change(screen.getByPlaceholderText('e.g. Malaysia'), {
+    fireEvent.change(screen.getByLabelText(/Home country/), {
       target: { value: ' Malaysia ' },
     });
-    fireEvent.change(screen.getByPlaceholderText('e.g. Selangor'), {
+    fireEvent.change(screen.getByLabelText(/Home state/), {
       target: { value: ' Selangor ' },
     });
     fireEvent.click(screen.getByRole('button', { name: /Continue/ }));
@@ -206,6 +206,48 @@ describe('App end-to-end component flows', () => {
       origin_state: 'Selangor',
     }));
     expect(await screen.findByText('Where to next?')).toBeInTheDocument();
+  });
+
+  it('changes the home location only from the Profile screen', async () => {
+    apiMocks.getProfile.mockResolvedValue({
+      status: 'success',
+      onboarded: true,
+      profile: { name: 'Alex', home_country: 'Malaysia', home_state: 'Selangor' },
+    });
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Profile' }));
+
+    // Prefilled, and each label names its own box.
+    expect(screen.getByText('Your profile')).toBeInTheDocument();
+    expect(screen.getByLabelText(/Your name/)).toHaveValue('Alex');
+    expect(screen.getByLabelText(/Home state/)).toHaveValue('Selangor');
+    fireEvent.change(screen.getByLabelText(/Home country/), { target: { value: ' Singapore ' } });
+    fireEvent.change(screen.getByLabelText(/Home state/), { target: { value: 'Central' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(apiMocks.submitProfile).toHaveBeenCalledWith({
+      name: 'Alex',
+      origin_country: 'Singapore',
+      origin_state: 'Central',
+    }));
+    expect(await screen.findByText('Where to next?')).toBeInTheDocument();
+  });
+
+  it('leaves the profile unchanged when its editor is cancelled', async () => {
+    apiMocks.getProfile.mockResolvedValue({
+      status: 'success',
+      onboarded: true,
+      profile: { name: 'Alex', home_country: 'Malaysia', home_state: 'Selangor' },
+    });
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Profile' }));
+    fireEvent.change(screen.getByLabelText(/Home country/), { target: { value: 'Japan' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    expect(await screen.findByText('Where to next?')).toBeInTheDocument();
+    expect(apiMocks.submitProfile).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Profile' }));
+    expect(screen.getByLabelText(/Home country/)).toHaveValue('Malaysia');
   });
 
   it('loads an existing onboarded profile and sends a chat message', async () => {
@@ -775,13 +817,13 @@ describe('App end-to-end component flows', () => {
     passFocusRevalidationCooldown();
     fireEvent.focus(window);
     expect(await screen.findByText('Welcome to Wander AI')).toBeInTheDocument();
-    fireEvent.change(screen.getByPlaceholderText('e.g. Alex Tan'), {
+    fireEvent.change(screen.getByLabelText(/Your name/), {
       target: { value: 'Alex' },
     });
-    fireEvent.change(screen.getByPlaceholderText('e.g. Malaysia'), {
+    fireEvent.change(screen.getByLabelText(/Home country/), {
       target: { value: 'Malaysia' },
     });
-    fireEvent.change(screen.getByPlaceholderText('e.g. Selangor'), {
+    fireEvent.change(screen.getByLabelText(/Home state/), {
       target: { value: 'Selangor' },
     });
     fireEvent.click(screen.getByRole('button', { name: /Continue/ }));
@@ -844,7 +886,7 @@ describe('App end-to-end component flows', () => {
     fireEvent.focus(window);
     await waitFor(() => expect(apiMocks.getChatHistory).toHaveBeenCalledTimes(2));
     fireEvent.click(screen.getByRole('button', { name: 'New Trip' }));
-    fireEvent.change(screen.getByPlaceholderText('e.g. Japan'), {
+    fireEvent.change(screen.getByLabelText(/Destination country/), {
       target: { value: 'South Korea' },
     });
 
@@ -861,7 +903,7 @@ describe('App end-to-end component flows', () => {
       });
     });
 
-    expect(screen.getByPlaceholderText('e.g. Japan')).toHaveValue('South Korea');
+    expect(screen.getByLabelText(/Destination country/)).toHaveValue('South Korea');
     expect(screen.getByRole('button', { name: /^Taiwan/ })).toBeInTheDocument();
     expect(screen.queryByText('Saved Taiwan plan')).not.toBeInTheDocument();
   });
@@ -888,7 +930,7 @@ describe('App end-to-end component flows', () => {
 
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: 'New Trip' }));
-    fireEvent.change(screen.getByPlaceholderText('e.g. Japan'), {
+    fireEvent.change(screen.getByLabelText(/Destination country/), {
       target: { value: 'New Zealand' },
     });
 
@@ -899,7 +941,7 @@ describe('App end-to-end component flows', () => {
       backgroundHistory.reject(new Error('background database outage'));
     });
 
-    expect(screen.getByPlaceholderText('e.g. Japan')).toHaveValue('New Zealand');
+    expect(screen.getByLabelText(/Destination country/)).toHaveValue('New Zealand');
     expect(screen.getByRole('button', { name: /^Japan/ })).toBeInTheDocument();
     expect(screen.queryByText(/No cached history was loaded/)).not.toBeInTheDocument();
   });
@@ -912,7 +954,7 @@ describe('App end-to-end component flows', () => {
     expect(screen.getByText('Please enter a destination country.')).toBeInTheDocument();
     expect(apiMocks.submitTripForm).not.toHaveBeenCalled();
 
-    fireEvent.change(screen.getByPlaceholderText('e.g. Japan'), { target: { value: 'Japan' } });
+    fireEvent.change(screen.getByLabelText(/Destination country/), { target: { value: 'Japan' } });
     fireEvent.click(screen.getByRole('button', { name: /Generate itinerary/ }));
     expect(screen.getByText('Please pick your travel dates.')).toBeInTheDocument();
 
@@ -932,10 +974,10 @@ describe('App end-to-end component flows', () => {
     apiMocks.submitTripForm.mockReturnValue(new Promise(() => undefined));
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: 'New Trip' }));
-    fireEvent.change(screen.getByPlaceholderText('e.g. Japan'), { target: { value: 'Japan' } });
+    fireEvent.change(screen.getByLabelText(/Destination country/), { target: { value: 'Japan' } });
     fireEvent.change(screen.getByLabelText('Start date'), { target: { value: '2026-08-01' } });
     fireEvent.change(screen.getByLabelText('End date'), { target: { value: '2026-08-05' } });
-    fireEvent.change(screen.getByPlaceholderText('e.g. 3000'), { target: { value: '5000' } });
+    fireEvent.change(screen.getByLabelText(/Total budget/), { target: { value: '5000' } });
     fireEvent.click(screen.getByRole('button', { name: /Generate itinerary/ }));
 
     await waitFor(() => expect(apiMocks.submitTripForm).toHaveBeenCalledWith({
@@ -966,11 +1008,11 @@ describe('App end-to-end component flows', () => {
 
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: 'New Trip' }));
-    fireEvent.change(screen.getByPlaceholderText('e.g. Japan'), { target: { value: 'Japan' } });
+    fireEvent.change(screen.getByLabelText(/Destination country/), { target: { value: 'Japan' } });
     fireEvent.change(destinationCityInput(), { target: { value: 'Tokyo' } });
     fireEvent.change(screen.getByLabelText('Start date'), { target: { value: '2026-08-01' } });
     fireEvent.change(screen.getByLabelText('End date'), { target: { value: '2026-08-05' } });
-    fireEvent.change(screen.getByPlaceholderText('e.g. 3000'), { target: { value: '5000' } });
+    fireEvent.change(screen.getByLabelText(/Total budget/), { target: { value: '5000' } });
     fireEvent.click(screen.getByRole('button', { name: /Generate itinerary/ }));
 
     expect(await screen.findByText('Tokyo Tower')).toBeInTheDocument();
@@ -997,11 +1039,11 @@ describe('App end-to-end component flows', () => {
 
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: 'New Trip' }));
-    fireEvent.change(screen.getByPlaceholderText('e.g. Japan'), { target: { value: 'Japan' } });
+    fireEvent.change(screen.getByLabelText(/Destination country/), { target: { value: 'Japan' } });
     fireEvent.change(destinationCityInput(), { target: { value: 'Tokyo' } });
     fireEvent.change(screen.getByLabelText('Start date'), { target: { value: '2026-08-01' } });
     fireEvent.change(screen.getByLabelText('End date'), { target: { value: '2026-08-05' } });
-    fireEvent.change(screen.getByPlaceholderText('e.g. 3000'), { target: { value: '5000' } });
+    fireEvent.change(screen.getByLabelText(/Total budget/), { target: { value: '5000' } });
     fireEvent.click(screen.getByRole('button', { name: /Generate itinerary/ }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
@@ -1039,17 +1081,17 @@ describe('App end-to-end component flows', () => {
 
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: 'New Trip' }));
-    fireEvent.change(screen.getByPlaceholderText('e.g. Japan'), { target: { value: 'Japan' } });
+    fireEvent.change(screen.getByLabelText(/Destination country/), { target: { value: 'Japan' } });
     fireEvent.change(destinationCityInput(), { target: { value: 'Tokyo' } });
     fireEvent.change(screen.getByLabelText('Start date'), { target: { value: '2026-08-01' } });
     fireEvent.change(screen.getByLabelText('End date'), { target: { value: '2026-08-05' } });
-    fireEvent.change(screen.getByPlaceholderText('e.g. 3000'), { target: { value: '5000' } });
+    fireEvent.change(screen.getByLabelText(/Total budget/), { target: { value: '5000' } });
     fireEvent.click(screen.getByRole('button', { name: /Generate itinerary/ }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'Planning is temporarily unavailable. Please retry.',
     );
-    fireEvent.change(screen.getByPlaceholderText('e.g. Japan'), { target: { value: 'China' } });
+    fireEvent.change(screen.getByLabelText(/Destination country/), { target: { value: 'China' } });
     const retry = screen.getByRole('button', { name: 'Retry planning' });
     fireEvent.click(retry);
     fireEvent.click(retry);
@@ -1083,11 +1125,11 @@ describe('App end-to-end component flows', () => {
     });
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: 'New Trip' }));
-    fireEvent.change(screen.getByPlaceholderText('e.g. Japan'), { target: { value: 'Japan' } });
+    fireEvent.change(screen.getByLabelText(/Destination country/), { target: { value: 'Japan' } });
     fireEvent.change(destinationCityInput(), { target: { value: 'Tokyo, Kyoto' } });
     fireEvent.change(screen.getByLabelText('Start date'), { target: { value: '2026-08-01' } });
     fireEvent.change(screen.getByLabelText('End date'), { target: { value: '2026-08-05' } });
-    fireEvent.change(screen.getByPlaceholderText('e.g. 3000'), { target: { value: '5000' } });
+    fireEvent.change(screen.getByLabelText(/Total budget/), { target: { value: '5000' } });
     fireEvent.click(screen.getByRole('button', { name: /Generate itinerary/ }));
     await waitFor(() => expect(apiMocks.submitTripForm).toHaveBeenCalledWith({
       country: 'Japan',
@@ -1136,7 +1178,7 @@ describe('App end-to-end component flows', () => {
 
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: 'New Trip' }));
-    fireEvent.change(screen.getByPlaceholderText('e.g. Japan'), { target: { value: 'Japan' } });
+    fireEvent.change(screen.getByLabelText(/Destination country/), { target: { value: 'Japan' } });
     fireEvent.change(destinationCityInput(), { target: { value: 'Tokyo' } });
     fireEvent.change(screen.getByLabelText('Start date'), { target: { value: '2026-08-01' } });
     fireEvent.change(screen.getByLabelText('End date'), { target: { value: '2026-08-05' } });
@@ -1196,11 +1238,11 @@ describe('App end-to-end component flows', () => {
 
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: 'New Trip' }));
-    fireEvent.change(screen.getByPlaceholderText('e.g. Japan'), { target: { value: 'Japan' } });
+    fireEvent.change(screen.getByLabelText(/Destination country/), { target: { value: 'Japan' } });
     fireEvent.change(destinationCityInput(), { target: { value: 'Tokyo' } });
     fireEvent.change(screen.getByLabelText('Start date'), { target: { value: '2026-08-01' } });
     fireEvent.change(screen.getByLabelText('End date'), { target: { value: '2026-08-05' } });
-    fireEvent.change(screen.getByPlaceholderText('e.g. 3000'), { target: { value: '500' } });
+    fireEvent.change(screen.getByLabelText(/Total budget/), { target: { value: '500' } });
     fireEvent.click(screen.getByRole('button', { name: /Generate itinerary/ }));
 
     expect(await screen.findByText('Budget confirmation required')).toBeInTheDocument();
@@ -1252,12 +1294,12 @@ describe('App end-to-end component flows', () => {
 
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: 'New Trip' }));
-    const destination = screen.getByPlaceholderText('e.g. Japan');
+    const destination = screen.getByLabelText(/Destination country/);
     fireEvent.change(destination, { target: { value: 'Japan' } });
     fireEvent.change(destinationCityInput(), { target: { value: 'Tokyo' } });
     fireEvent.change(screen.getByLabelText('Start date'), { target: { value: '2026-08-01' } });
     fireEvent.change(screen.getByLabelText('End date'), { target: { value: '2026-08-05' } });
-    fireEvent.change(screen.getByPlaceholderText('e.g. 3000'), { target: { value: '500' } });
+    fireEvent.change(screen.getByLabelText(/Total budget/), { target: { value: '500' } });
     fireEvent.click(screen.getByRole('button', { name: /Generate itinerary/ }));
     expect(await screen.findByText('Budget confirmation required')).toBeInTheDocument();
 
@@ -1292,11 +1334,11 @@ describe('App end-to-end component flows', () => {
 
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: 'New Trip' }));
-    fireEvent.change(screen.getByPlaceholderText('e.g. Japan'), { target: { value: 'Japan' } });
+    fireEvent.change(screen.getByLabelText(/Destination country/), { target: { value: 'Japan' } });
     fireEvent.change(destinationCityInput(), { target: { value: 'Tokyo' } });
     fireEvent.change(screen.getByLabelText('Start date'), { target: { value: '2026-08-01' } });
     fireEvent.change(screen.getByLabelText('End date'), { target: { value: '2026-08-05' } });
-    const amount = screen.getByPlaceholderText('e.g. 3000');
+    const amount = screen.getByLabelText(/Total budget/);
     fireEvent.change(amount, { target: { value: '500' } });
     fireEvent.click(screen.getByRole('button', { name: /Generate itinerary/ }));
     expect(await screen.findByText('Budget confirmation required')).toBeInTheDocument();
@@ -1340,11 +1382,11 @@ describe('App end-to-end component flows', () => {
 
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: 'New Trip' }));
-    fireEvent.change(screen.getByPlaceholderText('e.g. Japan'), { target: { value: 'Japan' } });
+    fireEvent.change(screen.getByLabelText(/Destination country/), { target: { value: 'Japan' } });
     fireEvent.change(destinationCityInput(), { target: { value: 'Tokyo' } });
     fireEvent.change(screen.getByLabelText('Start date'), { target: { value: '2026-08-01' } });
     fireEvent.change(screen.getByLabelText('End date'), { target: { value: '2026-08-05' } });
-    fireEvent.change(screen.getByPlaceholderText('e.g. 3000'), { target: { value: '5000' } });
+    fireEvent.change(screen.getByLabelText(/Total budget/), { target: { value: '5000' } });
     fireEvent.click(screen.getByRole('button', { name: /Generate itinerary/ }));
 
     expect(await screen.findByText(/Current price data is unavailable/)).toBeInTheDocument();
@@ -1673,7 +1715,7 @@ describe('App end-to-end component flows', () => {
       draft_itinerary: [{ day: 1, hotel: { hotel_name: 'Session A Hotel' }, activities: [] }],
       daily_map_info: {}, total_budget: 3500, currency: 'CNY', budget_allocation: {},
     }));
-    expect(screen.getByPlaceholderText('e.g. Japan')).toBeInTheDocument();
+    expect(screen.getByLabelText(/Destination country/)).toBeInTheDocument();
     expect(screen.queryByText('A response')).not.toBeInTheDocument();
     expect(screen.queryByText('Session A Hotel')).not.toBeInTheDocument();
   });
@@ -1946,11 +1988,11 @@ describe('App end-to-end component flows', () => {
       render(<App />);
 
       fireEvent.click(await screen.findByRole('button', { name: 'New Trip' }));
-      fireEvent.change(screen.getByPlaceholderText('e.g. Japan'), { target: { value: 'Japan' } });
+      fireEvent.change(screen.getByLabelText(/Destination country/), { target: { value: 'Japan' } });
       fireEvent.change(destinationCityInput(), { target: { value: 'Tokyo' } });
       fireEvent.change(screen.getByLabelText('Start date'), { target: { value: '2026-08-01' } });
       fireEvent.change(screen.getByLabelText('End date'), { target: { value: '2026-08-05' } });
-      fireEvent.change(screen.getByPlaceholderText('e.g. 3000'), { target: { value: '5000' } });
+      fireEvent.change(screen.getByLabelText(/Total budget/), { target: { value: '5000' } });
       fireEvent.click(screen.getByRole('button', { name: /Generate itinerary/ }));
       await waitFor(() => expect(apiMocks.submitTripForm).toHaveBeenCalledTimes(1));
 

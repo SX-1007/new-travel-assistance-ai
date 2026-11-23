@@ -3,7 +3,7 @@
 import asyncio
 
 import pytest
-from google.api_core import exceptions as google_errors
+from langchain_core.exceptions import ModelRateLimitError
 from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import RunnableWithFallbacks
@@ -11,6 +11,7 @@ from langchain_core.tools import tool
 from langchain_google_genai import ChatGoogleGenerativeAI
 from pydantic import BaseModel
 
+from app.infrastructure.llm.tests.gemini_errors import per_day_quota, per_minute_quota
 from app.infrastructure.llm.chat import (
     OPENROUTER_BASE_URL,
     ChatBackend,
@@ -86,8 +87,8 @@ class CountingLimiter(SlidingWindowRateLimiter):
         return super().acquire(blocking=blocking)
 
 
-DAILY_QUOTA = google_errors.ResourceExhausted("429 quota_id: GenerateRequestsPerDayPerProjectPerModel-FreeTier")
-MINUTE_QUOTA = google_errors.ResourceExhausted("429 quota exceeded. Please retry in 30s.")
+DAILY_QUOTA = per_day_quota()
+MINUTE_QUOTA = per_minute_quota("Please retry in 30s.")
 
 
 def guarded_chain(clock):
@@ -265,7 +266,7 @@ def test_a_cooling_key_with_no_backup_fails_fast_with_a_clear_error(providers):
     health = BackendHealth(provider="gemini", model="gemini-test", clock=Clock())
     model = build_chat_model([ChatBackend("gemini", "main-key", "gemini-test", None, health)])
 
-    with pytest.raises(google_errors.ResourceExhausted):
+    with pytest.raises(ModelRateLimitError):
         model.invoke("first")
 
     with pytest.raises(BackendCoolingDown):

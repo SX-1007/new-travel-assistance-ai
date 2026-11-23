@@ -328,6 +328,10 @@ export type PlanningUnavailableReason =
   | 'provider_data_unavailable'
   // Live search quota used up: retrying right away won't help.
   | 'provider_quota_exhausted'
+  // A chat re-plan over the user's plan limit (the reply says when to retry).
+  | 'request_limit_reached'
+  // A chat re-plan while the server is planning as many trips as it can.
+  | 'planning_busy'
   | 'review_unavailable'
   | 'deadline_exhausted';
 
@@ -1418,6 +1422,8 @@ const isPlanningUnavailableReason = (value: unknown): value is PlanningUnavailab
   value === 'validation_failed'
   || value === 'provider_data_unavailable'
   || value === 'provider_quota_exhausted'
+  || value === 'request_limit_reached'
+  || value === 'planning_busy'
   || value === 'review_unavailable'
   || value === 'deadline_exhausted';
 

@@ -11,7 +11,8 @@ Key design decisions
   SelectorEventLoop, and only run.py can choose it before the loop exists.
 • **Errors** — every graph/provider/storage exception maps to a fixed-detail
   HTTP response in ``app/api/errors.py``; routes have no try/except.
-• **orjson** responses, **GZip** over 1 KB, explicit **CORS** origins.
+• Responses are serialised by FastAPI from each route's response model;
+  **GZip** over 1 KB, explicit **CORS** origins.
 • **Probes** — ``/health`` and ``/healthz`` are liveness (the process
   answers); ``/health/ready`` checks Postgres, vectors and checkpoints.
 • **ENVIRONMENT** (read without loading settings, see
@@ -20,6 +21,9 @@ Key design decisions
   ``CORS_ORIGINS`` (required), without credentials and with a fixed header
   list; the container refuses to start with development sign-in or
   without the request-limit store. "development" keeps the open defaults.
+• **Hardening** (``api/http_hardening.py``) — request bodies over 128 KiB
+  are refused (413); every response gets ``no-store``, ``nosniff``, no
+  framing, no referrer, a deny-all CSP, and HSTS in production.
 • **Threads** — the shared pool (``asyncio.to_thread``: health checks,
   profile reads, memory extraction) gets ``SHARED_THREADS``; planning has
   its own small pool in the container, so long plans can't starve it.
@@ -38,9 +42,10 @@ from typing import AsyncIterator, Final
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import ORJSONResponse
+from fastapi.responses import JSONResponse
 
 from app.api.errors import register_exception_handlers
+from app.api.http_hardening import RequestBodyLimit, SecurityHeaders
 from app.api.routers import chat, form, geocode, profile
 from app.bootstrap.container import (
     init_graph,
@@ -133,7 +138,6 @@ def create_app() -> FastAPI:
         description="Backend for self-adaptive travel planning agent",
         version=os.getenv("APP_VERSION", "1.0.0"),
         lifespan=lifespan,
-        default_response_class=ORJSONResponse,
         # Production publishes no API description.
         docs_url=None if production else "/docs",
         redoc_url=None if production else "/redoc",
@@ -145,6 +149,7 @@ def create_app() -> FastAPI:
     # ── Middleware (the last one added runs outermost) ──
 
     app.add_middleware(GZipMiddleware, minimum_size=1024)
+    app.add_middleware(RequestBodyLimit)
 
     _add_cors(app, production=production)
 
@@ -159,6 +164,9 @@ def create_app() -> FastAPI:
             logger.info("%s %s → %d (%.1f ms)", request.method, request.url.path, response.status_code, elapsed_ms)
 
         return response
+
+    # Outermost: every response, CORS preflights and 413s included.
+    app.add_middleware(SecurityHeaders, hsts=production)
 
     # ── Routers ──
     # Tags are declared once on each APIRouter; include_router would append
@@ -188,7 +196,7 @@ def create_app() -> FastAPI:
         """Readiness: 503 until Postgres, vectors and checkpoints all work."""
         checks = await asyncio.to_thread(readiness)
         ok = all(checks.values())
-        return ORJSONResponse(
+        return JSONResponse(
             {"status": "ok" if ok else "unavailable", "checks": checks},
             status_code=200 if ok else 503,
         )

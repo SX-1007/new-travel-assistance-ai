@@ -22,7 +22,11 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import openai
-from google.api_core import exceptions as google_errors
+from langchain_core.exceptions import (
+    ModelAuthenticationError,
+    ModelPermissionDeniedError,
+    ModelRateLimitError,
+)
 from langchain_google_genai.chat_models import ChatGoogleGenerativeAIError
 
 from app.shared.observability import log_event
@@ -136,18 +140,21 @@ def cooldown_for(error: BaseException, *, provider: str, now: float) -> tuple[fl
 
 
 def _gemini_cooldown(error: BaseException, now: float) -> tuple[float, str] | None:
+    # langchain-google-genai raises LangChain's provider-neutral model errors
+    # (a 429 is ``GoogleRateLimitError``, a ``ModelRateLimitError``); the
+    # message keeps Google's quota id and retry hint.
     text = str(error)
 
-    if isinstance(error, google_errors.ResourceExhausted):
+    if isinstance(error, ModelRateLimitError):
         if "perday" in text.replace("_", "").casefold():
             return max(_seconds_to_next_midnight(now, GEMINI_QUOTA_TIMEZONE), MIN_COOLDOWN), "llm.quota_daily"
 
         return _hinted_cooldown(text), "llm.quota_per_minute"
 
-    if isinstance(error, (google_errors.PermissionDenied, google_errors.Unauthenticated)):
+    if isinstance(error, (ModelAuthenticationError, ModelPermissionDeniedError)):
         return AUTH_FAILURE_COOLDOWN, "llm.key_rejected"
 
-    # The Gemini client wraps InvalidArgument; only a key problem is lasting.
+    # A bad key is reported as 400 INVALID_ARGUMENT; only that one is lasting.
     if isinstance(error, ChatGoogleGenerativeAIError) and _GEMINI_INVALID_KEY.search(text):
         return AUTH_FAILURE_COOLDOWN, "llm.key_rejected"
 

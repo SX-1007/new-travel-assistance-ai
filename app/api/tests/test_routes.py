@@ -8,8 +8,8 @@ import asyncio
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from google.api_core import exceptions as google_errors
 
+from app.infrastructure.llm.tests.gemini_errors import gemini_error, per_minute_quota
 from app.api.errors import ServiceNotReady, error_response_for, register_exception_handlers
 from app.api.providers import chat_history_loader, graph_runtime, identity_verifier, new_trip_intake, output_review
 from app.api.routers import chat, form
@@ -288,8 +288,9 @@ def test_chat_errors_map_to_statuses():
 
 
 def test_the_most_specific_error_rule_wins():
-    assert error_response_for(google_errors.ResourceExhausted("quota")).status_code == 429
-    assert error_response_for(google_errors.InternalServerError("boom")).status_code == 502
+    assert error_response_for(per_minute_quota()).status_code == 429
+    assert error_response_for(gemini_error(503, "overloaded")).status_code == 503
+    assert error_response_for(gemini_error(404, "model not found")).status_code == 502
 
 
 # ── History ─────────────────────────────────────────────────────────

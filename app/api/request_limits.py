@@ -17,10 +17,15 @@ and the page never fails on one.
 ``max_running`` trips being planned at once by this process. Like the
 session lock (B3) it is per process; several workers would need a shared
 lock.
+
+``ChatPlanAdmission`` puts a re-plan that a chat turn starts under the same
+three rules as a new trip from the form (the graph's planning node asks it,
+see ``orchestration/plan_admission.py``).
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -155,6 +160,22 @@ class PlanSlots:
             self._running -= 1
 
 
+class ChatPlanAdmission:
+    """``PlanAdmission`` for chat re-plans: the form's rules, in the form's
+    order (the user's slot, a free planning slot, then the plan is counted,
+    so a busy server never uses up one of the user's plans)."""
+
+    def __init__(self, *, limits: RequestLimits, slots: PlanSlots) -> None:
+        self._limits = limits
+        self._slots = slots
+
+    @asynccontextmanager
+    async def admit(self, user_id: str) -> AsyncIterator[None]:
+        async with self._slots.for_user(user_id), self._slots.planning():
+            await asyncio.to_thread(self._limits.check, PLANS, user_id)
+            yield
+
+
 def _duration(seconds: int) -> str:
     if seconds < 60:
         return f"{seconds} s"
@@ -170,6 +191,7 @@ def _duration(seconds: int) -> str:
 
 __all__ = [
     "CHAT_MESSAGES",
+    "ChatPlanAdmission",
     "FORM_SUBMITS",
     "LimitRule",
     "MAP_PINS",

@@ -376,6 +376,20 @@ describe('frontend API client', () => {
     })).toBe(false);
   });
 
+  it.each(['request_limit_reached', 'planning_busy'])(
+    'accepts a chat re-plan refused by the plan limits: %s',
+    async (reason) => {
+      const api = await loadApi();
+      expect(api.isChatResponse({
+        status: 'planning_unavailable', reason,
+        chat_reply: 'You\'ve reached the limit of 3 new trip plans a day. Your trip plan has not been changed.',
+        retryable: true,
+        draft_itinerary: [], daily_map_info: {}, itinerary_modified: false,
+        total_budget: 0, currency: '', budget_allocation: {}, budget_confirmation: null,
+      })).toBe(true);
+    },
+  );
+
   it.each([
     ['embedded JSON', 'Retry details: {"candidate_plan":{"day":1}}'],
     ['private planning marker', 'The planning_outcome is unavailable.'],

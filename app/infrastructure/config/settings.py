@@ -47,14 +47,12 @@ class Settings(BaseSettings):
     GEMINI_IATA_API: str = ""
     GEMINI_FLIGHTS_HOTELS: str = ""
     GEMINI_EXTRACTOR_API: str = ""
-    GEMINI_EMBED_API: str = ""
     GEMINI_DESTINATION_API: str = ""
     GEMINI_ACTIVITIES_API: str = ""
 
     # ── Models ───────────────────────────────────────────────────────
     GEMINI_CHAT_MODEL: str = "gemini-3.1-flash-lite"
     GEMINI_UTILITY_MODEL: str = "gemini-3.1-flash-lite"
-    GEMINI_EMBED_MODEL: str = "gemini-embedding-2"
     # Calls allowed per minute for each key and chat model, matching
     # Google's quota (15 on the free tier). Extra calls wait for a free slot
     # instead of failing with 429. 0 turns pacing off.
@@ -112,9 +110,6 @@ class Settings(BaseSettings):
         return self.ENVIRONMENT == "production"
 
     # ── Effective keys: a task's own key, else the fallback ──────────
-    @property
-    def effective_embed_api_key(self) -> str:
-        return self.GEMINI_EMBED_API or self.GEMINI_API_KEY
 
     @property
     def effective_flights_hotels_api_key(self) -> str:

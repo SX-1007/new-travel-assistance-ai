@@ -338,6 +338,9 @@ def unverified_reply_text(state: AgentState) -> str:
 def planning_failure_text(state: AgentState, kind: PlanKind) -> str:
     """Fallback when a plan could not be built, reviewed or promoted."""
 
+    if state.planning_refusal:
+        return state.planning_refusal
+
     if any(code.endswith(QUOTA_EXHAUSTED_ISSUE) for code in state.planning_issue_codes):
         return QUOTA_CHANGE_TEXT if effective_plan_revision(state) > 0 else QUOTA_NEW_PLAN_TEXT
 

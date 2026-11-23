@@ -34,6 +34,7 @@ from app.modules.itinerary.history import recover_itinerary_history
 from app.orchestration import router
 from app.orchestration.nodes.agent import AgentToolset
 from app.orchestration.nodes.context import USER_ID_KEY
+from app.orchestration.plan_admission import PLAN_ADMITTED_KEY
 from app.orchestration.session_access import SessionAccessService
 from app.orchestration.state import AgentState
 from app.shared.exceptions import InvalidTurnRequest, SessionAccessDenied, SessionBusy
@@ -171,11 +172,16 @@ class GraphRuntime:
         user_id: str,
         request_id: str | None = None,
     ) -> TurnResult:
-        """Plan a new trip on a session id this user reserves now."""
+        """Plan a new trip on a session id this user reserves now.
+
+        The caller has admitted the plan (limits and a planning slot): the
+        planning node must not count it again.
+        """
 
         _require_id(thread_id, "thread_id")
         _require_id(user_id, "user_id")
         config = self._config(thread_id, user_id, request_id)
+        config["configurable"][PLAN_ADMITTED_KEY] = True
         log_context = LogContext(request_id=request_id, session_id=thread_id)
 
         async with self._turn(thread_id):

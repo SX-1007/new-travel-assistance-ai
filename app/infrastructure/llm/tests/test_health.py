@@ -6,9 +6,9 @@ from zoneinfo import ZoneInfo
 import httpx
 import openai
 import pytest
-from google.api_core import exceptions as google_errors
 from langchain_google_genai.chat_models import ChatGoogleGenerativeAIError
 
+from app.infrastructure.llm.tests.gemini_errors import gemini_error, per_day_quota, per_minute_quota
 from app.infrastructure.llm.health import (
     AUTH_FAILURE_COOLDOWN,
     BackendCoolingDown,
@@ -18,11 +18,6 @@ from app.infrastructure.llm.health import (
 
 
 PACIFIC = ZoneInfo("America/Los_Angeles")
-PER_MINUTE = (
-    "429 You exceeded your current quota. quota_id: "
-    "GenerateRequestsPerMinutePerProjectPerModel-FreeTier. Please retry in 22.555s."
-)
-PER_DAY = "429 You exceeded your current quota. quota_id: GenerateRequestsPerDayPerProjectPerModel-FreeTier"
 
 
 def at(text):
@@ -52,15 +47,15 @@ class Clock:
 
 
 def test_a_per_minute_quota_follows_googles_retry_hint():
-    assert cooldown_for(google_errors.ResourceExhausted(PER_MINUTE), provider="gemini", now=0) == (
+    assert cooldown_for(per_minute_quota(), provider="gemini", now=0) == (
         22.555,
         "llm.quota_per_minute",
     )
 
 
 def test_a_tiny_or_missing_hint_still_waits_a_moment():
-    tiny = google_errors.ResourceExhausted("429 quota exceeded. Please retry in 0.4s.")
-    bare = google_errors.ResourceExhausted("429 quota exceeded")
+    tiny = per_minute_quota("Please retry in 0.4s.")
+    bare = gemini_error(429, "Quota exceeded.")
 
     assert cooldown_for(tiny, provider="gemini", now=0)[0] == 10.0
     assert cooldown_for(bare, provider="gemini", now=0)[0] == 60.0
@@ -69,7 +64,7 @@ def test_a_tiny_or_missing_hint_still_waits_a_moment():
 def test_a_daily_quota_waits_until_midnight_pacific():
     now = at("2026-10-31T10:00:00-07:00")
 
-    seconds, reason = cooldown_for(google_errors.ResourceExhausted(PER_DAY), provider="gemini", now=now)
+    seconds, reason = cooldown_for(per_day_quota(), provider="gemini", now=now)
 
     assert reason == "llm.quota_daily"
     assert datetime.fromtimestamp(now + seconds, PACIFIC).isoformat() == "2026-11-01T00:00:00-07:00"
@@ -79,7 +74,7 @@ def test_the_daily_reset_follows_daylight_saving():
     # US clocks go back on 1 Nov 2026, so that Pacific day lasts 25 hours.
     now = at("2026-11-01T00:30:00-07:00")
 
-    seconds, _ = cooldown_for(google_errors.ResourceExhausted(PER_DAY), provider="gemini", now=now)
+    seconds, _ = cooldown_for(per_day_quota(), provider="gemini", now=now)
 
     assert seconds == pytest.approx(24.5 * 3600)
     assert datetime.fromtimestamp(now + seconds, PACIFIC).isoformat() == "2026-11-02T00:00:00-08:00"
@@ -88,9 +83,9 @@ def test_the_daily_reset_follows_daylight_saving():
 @pytest.mark.parametrize(
     "error",
     [
-        ChatGoogleGenerativeAIError("Invalid argument provided to Gemini: 400 API key not valid. Please pass a valid API key."),
-        google_errors.PermissionDenied("403 The caller does not have permission"),
-        google_errors.Unauthenticated("401 Request had invalid authentication credentials"),
+        gemini_error(400, "API key not valid. Please pass a valid API key."),
+        gemini_error(403, "The caller does not have permission"),
+        gemini_error(401, "Request had invalid authentication credentials."),
     ],
 )
 def test_a_rejected_gemini_key_is_left_alone_for_a_while(error):
@@ -101,9 +96,10 @@ def test_a_rejected_gemini_key_is_left_alone_for_a_while(error):
     "error",
     [
         TimeoutError("read timed out"),
-        google_errors.InternalServerError("500 internal"),
-        google_errors.ServiceUnavailable("503 overloaded"),
-        ChatGoogleGenerativeAIError("Invalid argument provided to Gemini: 400 Request contains an invalid argument."),
+        gemini_error(500, "Internal error encountered."),
+        gemini_error(503, "The model is overloaded."),
+        gemini_error(400, "Request contains an invalid argument."),
+        ChatGoogleGenerativeAIError("Unsupported message role."),
         ValueError("could not parse the structured output"),
     ],
 )
@@ -136,7 +132,7 @@ def test_a_cooling_backend_is_refused_until_the_cooldown_ends():
     health = BackendHealth(provider="gemini", model="gemini-test", clock=clock)
 
     health.ensure_available()
-    health.record_failure(google_errors.ResourceExhausted(PER_MINUTE))
+    health.record_failure(per_minute_quota())
 
     with pytest.raises(BackendCoolingDown):
         health.ensure_available()
@@ -157,8 +153,8 @@ def test_a_shorter_cooldown_never_cuts_a_longer_one():
     clock = Clock(at("2026-10-31T10:00:00-07:00"))
     health = BackendHealth(provider="gemini", model="gemini-test", clock=clock)
 
-    health.record_failure(google_errors.ResourceExhausted(PER_DAY))
-    health.record_failure(google_errors.ResourceExhausted(PER_MINUTE))
+    health.record_failure(per_day_quota())
+    health.record_failure(per_minute_quota())
 
     assert health.seconds_until_available() == pytest.approx(14 * 3600)
 
@@ -166,7 +162,7 @@ def test_a_shorter_cooldown_never_cuts_a_longer_one():
 def test_a_call_after_the_cooldown_clears_it_and_logs_the_recovery(caplog):
     clock = Clock(0.0)
     health = BackendHealth(provider="gemini", model="gemini-test", clock=clock)
-    health.record_failure(google_errors.ResourceExhausted(PER_MINUTE))
+    health.record_failure(per_minute_quota())
     clock.now += 23
 
     with caplog.at_level("INFO"):
@@ -182,7 +178,7 @@ def test_a_call_already_in_flight_cannot_clear_a_newer_cooldown():
     health = BackendHealth(provider="gemini", model="gemini-test", clock=clock)
 
     in_flight = health.ensure_available()
-    health.record_failure(google_errors.ResourceExhausted(PER_MINUTE))
+    health.record_failure(per_minute_quota())
     health.record_success(in_flight)
 
     assert health.seconds_until_available() == pytest.approx(22.555)

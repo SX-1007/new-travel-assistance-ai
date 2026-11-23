@@ -27,7 +27,12 @@ import requests
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from google.api_core import exceptions as google_errors
+from langchain_core.exceptions import (
+    ModelAPIError,
+    ModelError,
+    ModelRateLimitError,
+    ModelTimeoutError,
+)
 from langgraph.errors import GraphRecursionError
 from psycopg_pool import PoolTimeout
 
@@ -90,7 +95,7 @@ ERROR_RESPONSES: Final[Mapping[type[BaseException], ErrorResponse]] = {
         retry_after_seconds=5,
     ),
     InvalidTurnRequest: ErrorResponse(
-        status.HTTP_422_UNPROCESSABLE_ENTITY,
+        status.HTTP_422_UNPROCESSABLE_CONTENT,
         "The request is missing a valid session or message.",
     ),
     # ── Request limits (``api/request_limits.py``) ──
@@ -138,18 +143,20 @@ ERROR_RESPONSES: Final[Mapping[type[BaseException], ErrorResponse]] = {
         "Exchange-rate service temporarily unavailable. Please retry shortly.",
         retry_after_seconds=30,
     ),
-    google_errors.ResourceExhausted: ErrorResponse(
+    # Language models (Gemini and OpenRouter alike): LangChain's
+    # provider-neutral errors, which both clients raise.
+    ModelRateLimitError: ErrorResponse(
         status.HTTP_429_TOO_MANY_REQUESTS,
         "The language model is rate limited. Please retry shortly.",
         retry_after_seconds=30,
     ),
-    google_errors.DeadlineExceeded: _UPSTREAM_TIMEOUT,
-    google_errors.ServiceUnavailable: ErrorResponse(
+    ModelTimeoutError: _UPSTREAM_TIMEOUT,
+    ModelAPIError: ErrorResponse(
         status.HTTP_503_SERVICE_UNAVAILABLE,
         "The language model is temporarily unavailable. Please retry shortly.",
         retry_after_seconds=30,
     ),
-    google_errors.GoogleAPIError: _UPSTREAM_ERROR,
+    ModelError: _UPSTREAM_ERROR,
     # Search, map and currency providers use ``requests``; ``httpx`` covers the rest.
     requests.Timeout: _UPSTREAM_TIMEOUT,
     requests.RequestException: _UPSTREAM_ERROR,
@@ -227,7 +234,7 @@ async def _handle_validation(request: Request, exc: RequestValidationError) -> J
                 for error in errors
             ],
         },
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
     )
 
 

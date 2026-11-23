@@ -11,6 +11,7 @@ from collections.abc import Iterable, Sequence
 from threading import Lock
 from typing import Any, Final
 
+from app.shared.cancellation import CancellationToken
 from app.shared.geo import great_circle_km
 
 
@@ -124,9 +125,17 @@ class SearchQuota:
 
     ``used`` starts the count part-way, for a run that continues one whose
     searches were already counted (see ``workflows/planning.py``).
+    ``cancellation``: every paid search asks the quota first, so a cancelled
+    run stops here (``OperationCancelled``) before spending another search.
     """
 
-    def __init__(self, limit: int, *, used: int = 0) -> None:
+    def __init__(
+        self,
+        limit: int,
+        *,
+        used: int = 0,
+        cancellation: CancellationToken | None = None,
+    ) -> None:
         if limit < 0:
             raise ValueError("limit must be non-negative")
 
@@ -136,8 +145,12 @@ class SearchQuota:
         self._limit = limit
         self._used = used
         self._lock = Lock()
+        self._cancellation = cancellation
 
     def try_acquire(self) -> bool:
+        if self._cancellation is not None:
+            self._cancellation.raise_if_cancelled()
+
         with self._lock:
             if self._used >= self._limit:
                 return False

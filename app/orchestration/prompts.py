@@ -334,8 +334,10 @@ def model_context(messages: Sequence[BaseMessage]) -> list[BaseMessage]:
       message so no tool exchange is split.
     * Tool calls and results are replayed as text. Gemini 3 requires a
       ``thought_signature`` on replayed function calls, which
-      langchain-google-genai 2.1.x drops; text replay avoids the 400 error.
-      Remove once on langchain-google-genai >= 3.
+      langchain-google-genai 2.1.x dropped; text replay avoided the 400
+      error. 4.x keeps signatures, so native replay is possible again, but
+      it changes what the model sees: switch only after a live check of
+      multi-step edits (known issue E4).
     * The call record is a server note, not assistant text. As assistant
       text ("[Called tool(s): …]") the model copied the format and wrote
       later calls as prose, so a requested edit was never executed.

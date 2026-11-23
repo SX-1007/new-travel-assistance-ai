@@ -2,38 +2,38 @@
 #  Travel Assistant AI backend — Python dependencies
 #  Every pin is the version the test suite runs against.
 #  Update deliberately, then re-run `python -m pytest`.
-#  Only packages the code imports are listed.
+#  Only packages the code imports are listed (plus orjson, pinned for
+#  security). Pins are the newest releases at least two weeks old when
+#  chosen (2026-11-23), all past the advisories pip-audit reported.
 # ════════════════════════════════════════════════════════════════════
 
 # ── Agent orchestration ──────────────────────────────────────────────
-langgraph==0.2.76                           # StateGraph, ToolNode (prebuilt is bundled in 0.2.x)
-langgraph-checkpoint==2.1.2
-langgraph-checkpoint-postgres==2.0.21       # AsyncPostgresSaver / PostgresSaver
-langchain-core==0.3.75
-langchain-google-genai==2.1.12              # Gemini chat model and embeddings
-langchain-openai==0.3.32                    # OpenRouter backup (OpenAI-compatible); last with core 0.3.75
-google-api-core==2.30.3                     # Gemini error types mapped in api/errors.py
+langgraph==1.2.20                           # StateGraph, ToolNode (langgraph.prebuilt)
+langgraph-checkpoint==4.3.1                 # strict checkpoint loading (checkpoints.py)
+langgraph-checkpoint-postgres==3.2.0        # AsyncPostgresSaver / PostgresSaver
+langchain-core==1.7.6
+langchain-google-genai==4.4.3               # Gemini chat models
+langchain-openai==1.7.4                     # OpenRouter backup (OpenAI-compatible)
 
 # ── API / ASGI server ────────────────────────────────────────────────
-fastapi[standard]==0.115.14                 # includes uvicorn and httpx (TestClient)
-orjson==3.11.3                              # ORJSONResponse
+fastapi[standard]==0.162.2                  # includes uvicorn and httpx (TestClient)
+orjson==3.13.0                              # not imported: LangGraph's JSON; pinned past CVE fixes
 
 # ── Settings ─────────────────────────────────────────────────────────
-pydantic==2.11.7
-pydantic-settings==2.10.1                   # infrastructure/config/settings.py
-python-dotenv==1.2.2                        # config/environment.py (main.py reads ENVIRONMENT without Settings)
+pydantic==2.14.3
+pydantic-settings==2.16.2                   # infrastructure/config/settings.py
+python-dotenv==1.2.4                        # config/environment.py (main.py reads ENVIRONMENT without Settings)
 
 # ── PostgreSQL (psycopg v3) ──────────────────────────────────────────
-psycopg[binary]==3.2.10
-psycopg-pool==3.2.6                         # sync main pool + async checkpoint pool
-                                            # (profiles, checkpoints, pgvector: one database)
-pgvector==0.4.1                             # registers the vector type on each connection
+psycopg[binary]==3.3.8
+psycopg-pool==3.3.3                         # sync main pool + async checkpoint pool
+                                            # (profiles, preferences, checkpoints: one database)
 
 # ── Firebase (sign-in) ───────────────────────────────────────────────
-firebase-admin==7.1.0
+firebase-admin==7.7.0
 
 # ── HTTP ─────────────────────────────────────────────────────────────
-requests==2.32.5                            # SerpAPI, Exa, Mapbox, currency, Upstash cache
+requests==2.34.2                            # SerpAPI, Exa, Mapbox, currency, Upstash cache
 
 # ── Locale / countries ───────────────────────────────────────────────
 pycountry==24.6.1
@@ -44,4 +44,4 @@ babel==2.17.0
 cachetools==5.5.2
 
 # ── Tests ────────────────────────────────────────────────────────────
-pytest==8.4.2
+pytest==9.2.0

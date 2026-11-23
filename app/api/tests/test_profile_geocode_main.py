@@ -136,7 +136,9 @@ def test_geocode_input_is_validated():
 
 
 def test_main_registers_every_route_without_starting_resources():
-    paths = {route.path for route in main.app.routes}
+    # The OpenAPI paths: newer FastAPI keeps included routers as nested
+    # entries in ``app.routes``, without a ``path`` of their own.
+    paths = set(main.app.openapi()["paths"])
 
     assert {
         "/api/chat/message",
@@ -154,10 +156,10 @@ def test_liveness_and_readiness_probes(monkeypatch):
     api = TestClient(main.app)
     assert api.get("/health").json() == {"status": "ok"}
 
-    monkeypatch.setattr(main, "readiness", lambda: {"postgres": True, "travel_vectors": True, "checkpoints": True})
+    monkeypatch.setattr(main, "readiness", lambda: {"postgres": True, "checkpoints": True})
     assert api.get("/health/ready").status_code == 200
 
-    monkeypatch.setattr(main, "readiness", lambda: {"postgres": True, "travel_vectors": True, "checkpoints": False})
+    monkeypatch.setattr(main, "readiness", lambda: {"postgres": True, "checkpoints": False})
     not_ready = api.get("/health/ready")
     assert not_ready.status_code == 503 and not_ready.json()["checks"]["checkpoints"] is False
 

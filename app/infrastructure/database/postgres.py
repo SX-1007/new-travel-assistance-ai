@@ -1,4 +1,4 @@
-"""Low-level PostgreSQL connection and pgvector adapter infrastructure.
+"""The shared PostgreSQL connection pool.
 
 The pool is created by ``init_connection_pool`` at application startup, not at
 import time, and receives its connection string from the composition root.
@@ -8,28 +8,17 @@ Importing this module therefore never needs configuration or a network.
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator
 from contextlib import contextmanager
 from threading import Lock
 from typing import Any
 
-import psycopg
 from psycopg import Connection
 from psycopg_pool import ConnectionPool
 
 from app.shared.logging import safe_log
 
 logger = logging.getLogger(__name__)
-
-
-# ── Optional pgvector native adapter ────────────────────────────────
-try:
-    from pgvector.psycopg import register_vector as _register_vector
-
-    _HAS_PGVECTOR_PYTHON = True
-except ImportError:
-    _register_vector = None
-    _HAS_PGVECTOR_PYTHON = False
 
 
 # ── Pool configuration ──────────────────────────────────────────────
@@ -43,9 +32,6 @@ POOL_TIMEOUT = 30.0
 def _configure_conn(conn: Connection[Any]) -> None:
     """Configure each newly-created PostgreSQL connection."""
     conn.execute(f"SET statement_timeout = {STATEMENT_TIMEOUT_MS}")
-
-    if _HAS_PGVECTOR_PYTHON and _register_vector is not None:
-        _register_vector(conn)
 
     # psycopg_pool expects configure hooks to return an idle connection.
     conn.commit()
@@ -67,11 +53,6 @@ def init_connection_pool(conninfo: str) -> None:
         if _connection_pool is not None:
             return
 
-        # Every pooled connection registers the vector type, so on a fresh
-        # database the extension must exist before the first one opens.
-        if _HAS_PGVECTOR_PYTHON:
-            _create_vector_extension(conninfo)
-
         pool = ConnectionPool(
             conninfo=conninfo,
             min_size=POOL_MIN_SIZE,
@@ -92,19 +73,6 @@ def init_connection_pool(conninfo: str) -> None:
         _connection_pool = pool
 
     safe_log(logger, logging.INFO, "storage.postgres.pool_opened")
-
-
-def _create_vector_extension(conninfo: str) -> None:
-    """Enable pgvector on a one-off connection; a failure is left to the pool.
-
-    Without the extension the pool's connections can't register the vector
-    type and the pool reports that, so this step only logs.
-    """
-    try:
-        with psycopg.connect(conninfo, autocommit=True) as conn:
-            conn.execute("CREATE EXTENSION IF NOT EXISTS vector;")
-    except Exception:
-        safe_log(logger, logging.WARNING, "storage.postgres.vector_extension_unavailable")
 
 
 def close_connection_pool() -> None:
@@ -150,36 +118,3 @@ def get_connection() -> Iterator[Connection[Any]]:
 
     with pool.connection() as conn:
         yield conn
-
-
-def ensure_vector_extension() -> bool:
-    """Enable pgvector if possible; return False when it cannot be created.
-
-    The statement runs in its own transaction block so that a failure (for
-    example, missing privileges on a managed database where the extension is
-    already enabled) rolls back cleanly instead of leaving the connection in
-    an aborted transaction for the DDL that follows.
-    """
-    try:
-        with get_connection() as conn:
-            with conn.transaction():
-                conn.execute("CREATE EXTENSION IF NOT EXISTS vector;")
-        return True
-    except Exception:
-        safe_log(logger, logging.WARNING, "storage.postgres.vector_extension_unavailable")
-        return False
-
-
-def vector_cast_suffix() -> str:
-    """Return the SQL cast needed when the native pgvector adapter is absent."""
-    return "" if _HAS_PGVECTOR_PYTHON else "::vector"
-
-
-def prepare_vector_parameter(vector: Sequence[float]) -> list[float] | str:
-    """Prepare an embedding vector for psycopg parameter binding."""
-    values = [float(value) for value in vector]
-
-    if _HAS_PGVECTOR_PYTHON:
-        return values
-
-    return "[" + ",".join(repr(value) for value in values) + "]"

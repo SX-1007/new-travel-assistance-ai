@@ -15,6 +15,12 @@ PlanningUnavailableReason = Literal[
     "provider_data_unavailable",
     # A paid search provider's quota is used up: retrying soon won't help.
     "provider_quota_exhausted",
+    # A chat re-plan over the user's plan limit, or while another of the
+    # user's plans runs: the reply says when to try again.
+    "request_limit_reached",
+    # A chat re-plan while the server plans as many trips as it can, or
+    # while the limits can't be checked: try again in a minute.
+    "planning_busy",
     "review_unavailable",
     "deadline_exhausted",
 ]

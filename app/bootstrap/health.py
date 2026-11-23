@@ -1,5 +1,5 @@
-"""Readiness of the storage the API needs: Postgres, the vector table and
-the graph's checkpoint pool."""
+"""Readiness of the storage the API needs: Postgres and the graph's
+checkpoint pool."""
 
 from __future__ import annotations
 
@@ -13,7 +13,6 @@ logger = logging.getLogger(__name__)
 
 _UNAVAILABLE_EVENTS = {
     "postgres": "bootstrap.health.postgres_unavailable",
-    "travel_vectors": "bootstrap.health.vector_store_unavailable",
     "checkpoints": "bootstrap.health.checkpoints_unavailable",
 }
 
@@ -25,7 +24,7 @@ def readiness() -> dict[str, bool]:
         results = dict(verify_resources())
     except Exception:
         safe_log(logger, logging.ERROR, "bootstrap.health.check_failed")
-        results = {"postgres": False, "travel_vectors": False}
+        results = {"postgres": False}
 
     results["checkpoints"] = graph_ready()
     return results

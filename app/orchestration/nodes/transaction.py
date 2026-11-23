@@ -83,6 +83,7 @@ def planning_reset() -> dict[str, Any]:
         "planning_attempts": 0,
         "planning_searches_used": 0,
         "planning_issue_codes": [],
+        "planning_refusal": None,
         "output_review_attempts": 0,
         "output_review_issue_codes": [],
     }

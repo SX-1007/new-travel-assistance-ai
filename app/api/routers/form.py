@@ -122,7 +122,7 @@ async def _submit(
         ) from exc
     except DestinationResolutionInvalid as exc:
         # Our own fixed messages about the user's input; safe to return.
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
 
     if isinstance(outcome, BudgetCheckUnavailable):
         return BudgetCheckUnavailableResponse(

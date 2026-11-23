@@ -64,7 +64,7 @@ from app.infrastructure.database.checkpoint_pool import (
     open_checkpoint_pool,
 )
 from app.infrastructure.ratelimit.upstash_limiter import UpstashFixedWindowLimiter
-from app.api.request_limits import PlanSlots, RequestLimits
+from app.api.request_limits import ChatPlanAdmission, PlanSlots, RequestLimits
 from app.infrastructure.database.postgres import (
     close_connection_pool,
     init_connection_pool,
@@ -76,6 +76,7 @@ from app.infrastructure.database.session_ownership import (
 from app.infrastructure.database.user_profiles import (
     PostgresUserProfileStore,
 )
+from app.infrastructure.database.user_preferences import PostgresPreferenceStore
 from app.infrastructure.factual_qa.gemini import (
     GeminiFactualAnswerWriter,
     GeminiGroundingReviewer,
@@ -93,9 +94,6 @@ from app.infrastructure.factual_qa.web_search import (
 from app.infrastructure.llm.chat import (
     ChatBackend,
     build_chat_model,
-)
-from app.infrastructure.llm.gemini import (
-    GeminiEmbedder,
 )
 from app.infrastructure.llm.health import (
     BackendHealth,
@@ -127,12 +125,6 @@ from app.infrastructure.search.exa import (
 from app.infrastructure.search.serpapi import (
     SerpApiClient,
     SerpApiKeyHealth,
-)
-from app.infrastructure.vector.semantic_preferences import (
-    PgVectorSemanticPreferenceStore,
-)
-from app.infrastructure.vector.travel_options import (
-    PgVectorTravelOptionStore,
 )
 from app.memory.extraction import (
     build_extraction_chain,
@@ -181,6 +173,7 @@ from app.modules.routing.service import (
 )
 from app.orchestration.checkpoints import (
     ResilientAsyncPostgresSaver,
+    checkpoint_serializer,
     setup_checkpointer,
 )
 from app.orchestration.graph import (
@@ -207,8 +200,10 @@ from app.modules.profile.service import OnboardingService
 
 logger = logging.getLogger(__name__)
 
-# Trips this process plans at once (more wait for a slot: 503); the planning
-# thread pool has one more thread, for a chat re-plan.
+# Trips this process plans at once, from the form or from chat (more are
+# refused: 503 or a chat reply). Each holds its slot until its planning
+# thread stops; the pool's extra thread covers a thread that overruns the
+# stop grace period (``workflows/planning.STOP_GRACE_SECONDS``).
 MAX_PLANS_RUNNING: Final = 2
 PLANNING_THREADS: Final = MAX_PLANS_RUNNING + 1
 
@@ -344,6 +339,13 @@ def get_plan_slots() -> PlanSlots:
 
 
 @lru_cache(maxsize=1)
+def get_chat_plan_admission() -> ChatPlanAdmission:
+    """Chat re-plans pass the same limits and slots as form plans."""
+
+    return ChatPlanAdmission(limits=get_request_limits(), slots=get_plan_slots())
+
+
+@lru_cache(maxsize=1)
 def get_planning_executor() -> ThreadPoolExecutor:
     """Planning's own small pool: each plan holds a thread for minutes,
     which must never starve the shared pool (health checks, profile
@@ -397,31 +399,12 @@ def get_session_access_service() -> SessionAccessService:
     return SessionAccessService(store=get_session_ownership_repository())
 
 
-# ── Embeddings / vector stores ──────────────────────────────────────
+# ── Preferences ─────────────────────────────────────────────────────
 
 
 @lru_cache(maxsize=1)
-def get_embedder() -> GeminiEmbedder:
-    settings = _settings()
-
-    return GeminiEmbedder(
-        api_key=settings.effective_embed_api_key,
-        model=settings.GEMINI_EMBED_MODEL,
-    )
-
-
-@lru_cache(maxsize=1)
-def get_travel_option_store() -> PgVectorTravelOptionStore:
-    return PgVectorTravelOptionStore(
-        embedder=get_embedder(),
-    )
-
-
-@lru_cache(maxsize=1)
-def get_semantic_preference_store() -> PgVectorSemanticPreferenceStore:
-    return PgVectorSemanticPreferenceStore(
-        embedder=get_embedder(),
-    )
+def get_preference_store() -> PostgresPreferenceStore:
+    return PostgresPreferenceStore()
 
 
 # ── Memory ──────────────────────────────────────────────────────────
@@ -431,7 +414,7 @@ def get_semantic_preference_store() -> PgVectorSemanticPreferenceStore:
 def get_memory_service() -> MemoryService:
     return MemoryService(
         profile_store=get_user_profile_store(),
-        semantic_store=get_semantic_preference_store(),
+        semantic_store=get_preference_store(),
     )
 
 
@@ -810,8 +793,7 @@ def init_resources() -> None:
     get_identity_verifier()
 
     get_user_profile_store().ensure_schema()
-    get_travel_option_store().ensure_schema()
-    get_semantic_preference_store().ensure_schema()
+    get_preference_store().ensure_schema()
 
     ownership = get_session_ownership_repository()
     ownership.ensure_schema()
@@ -829,15 +811,7 @@ def init_resources() -> None:
 def verify_resources() -> dict[str, bool]:
     """Return readiness of each required startup resource."""
 
-    database_ready = verify_connection_pool()
-
-    return {
-        "postgres": database_ready,
-        "travel_vectors": (
-            database_ready
-            and get_travel_option_store().verify()
-        ),
-    }
+    return {"postgres": verify_connection_pool()}
 
 
 # ── Output review ───────────────────────────────────────────────────
@@ -1000,6 +974,7 @@ def get_graph_services() -> GraphServices:
             currency=get_currency_provider(),
             budget=get_budget_assessment_service(),
             executor=get_planning_executor(),
+            admission=get_chat_plan_admission(),
         ),
         replies=ReplyServices(reviewer=reviewer, writer=chat_model),
         models=AgentModels.bind(chat_model, get_agent_toolset()),
@@ -1036,7 +1011,7 @@ async def init_graph() -> GraphRuntime:
         pool = await open_checkpoint_pool(_settings().DATABASE_URL)
 
         try:
-            saver = ResilientAsyncPostgresSaver(pool)
+            saver = ResilientAsyncPostgresSaver(pool, serde=checkpoint_serializer())
             await setup_checkpointer(saver)
             workflow = compile_graph(
                 build_nodes(get_graph_services()),
@@ -1094,6 +1069,7 @@ _ALL_GETTERS = (
     get_planning_executor,
     get_request_limits,
     get_rate_limit_counter,
+    get_chat_plan_admission,
     get_plan_slots,
     get_gemini_rate_limiter,
     get_openrouter_rate_limiter,
@@ -1140,9 +1116,7 @@ _ALL_GETTERS = (
     get_currency_provider,
     get_memory_extraction_chain,
     get_memory_service,
-    get_semantic_preference_store,
-    get_travel_option_store,
-    get_embedder,
+    get_preference_store,
     get_session_access_service,
     get_session_ownership_repository,
     get_user_profile_store,

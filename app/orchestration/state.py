@@ -258,6 +258,10 @@ class AgentState(BaseModel):
         default_factory=list,
     )
 
+    # Why a chat re-plan was refused before it started (a request limit,
+    # see ``plan_admission.py``): the exact reply to give.
+    planning_refusal: str | None = None
+
     output_review_attempts: int = Field(
         default=0,
         ge=0,

@@ -86,6 +86,7 @@ from app.modules.places.policies import (
     text_key,
 )
 from app.modules.places.service import VerifiedPlaceSearch
+from app.shared.cancellation import CancellationToken
 from app.shared.exceptions import ProviderQuotaExhausted
 from app.shared.logging import safe_log
 
@@ -267,10 +268,22 @@ class ActivityPlanningService:
         self._max_workers = max_workers
         self._min_places = min_places_per_day
 
-    def search_quota(self, *, days: int, pacing: Any, used: int = 0) -> SearchQuota:
-        """One planning run's limit on paid searches, shared by its attempts."""
+    def search_quota(
+        self,
+        *,
+        days: int,
+        pacing: Any,
+        used: int = 0,
+        cancellation: CancellationToken | None = None,
+    ) -> SearchQuota:
+        """One planning run's limit on paid searches, shared by its attempts.
+        A cancelled ``cancellation`` stops the run at its next paid search."""
 
-        return SearchQuota(min(self._max_searches, search_limit_for_trip(days, pacing)), used=used)
+        return SearchQuota(
+            min(self._max_searches, search_limit_for_trip(days, pacing)),
+            used=used,
+            cancellation=cancellation,
+        )
 
     def plan(self, request: ActivityPlanRequest, *, quota: SearchQuota | None = None) -> ActivityPlanResult:
         """Fill the skeleton. ``quota`` is the run's shared search limit;

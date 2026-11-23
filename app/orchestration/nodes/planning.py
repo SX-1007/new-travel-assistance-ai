@@ -21,6 +21,7 @@ import logging
 import time
 from collections.abc import Mapping, Sequence
 from concurrent.futures import Executor
+from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from typing import Any
 
@@ -67,6 +68,13 @@ from app.orchestration.nodes.transaction import (
     planning_reset,
     transaction_view,
 )
+from app.orchestration.plan_admission import (
+    ADMISSION_ERRORS,
+    LIMITS_UNAVAILABLE_ISSUE,
+    PlanAdmission,
+    plan_admitted,
+    refusal_for,
+)
 from app.orchestration.planning_requirements import build_trip_requirements
 from app.orchestration.prompts import build_prompt_messages
 from app.orchestration.state import AgentState
@@ -96,6 +104,9 @@ class PlanningServices:
     # Planning's own threads, so long plans never fill the shared pool that
     # health checks and short reads use. None: the event loop's default.
     executor: Executor | None = None
+    # Limits for a run a chat turn starts (``plan_admission.py``). None:
+    # no limits (tests, development without the limit store).
+    admission: PlanAdmission | None = None
 
 
 # ── Setup ───────────────────────────────────────────────────────────
@@ -193,21 +204,61 @@ async def execute_validated_transaction_node(
     planning: PlanningServices,
     profiles: ProfileLoader,
 ) -> dict[str, Any]:
-    """Build a validated private candidate; the public plan is untouched."""
+    """Build a validated private candidate; the public plan is untouched.
+
+    A run a chat turn started must first pass the same limits as a new trip
+    (daily plans, one at a time per user, server capacity); the admission is
+    held until the planning thread has stopped. A refusal plans nothing.
+    """
 
     log_context = node_log_context(config)
-    profile = await profiles.load(user_id_from_config(config), log_context=log_context)
+    user_id = user_id_from_config(config)
 
-    return await run_planning_transaction(
-        transaction_view(state),
-        planner=planning.planner,
-        booking=planning.booking,
-        activities=planning.activities,
-        routes=planning.routes,
-        user_profile=profile,
-        log_context=log_context,
-        executor=planning.executor,
+    async with AsyncExitStack() as admitted:
+        if planning.admission is not None and not plan_admitted(config):
+            try:
+                if not user_id:
+                    raise LookupError("no user id to count the plan against")
+
+                await admitted.enter_async_context(planning.admission.admit(user_id))
+            except (*ADMISSION_ERRORS, LookupError) as exc:
+                return _admission_refused(state, exc, log_context)
+
+        profile = await profiles.load(user_id, log_context=log_context)
+
+        return await run_planning_transaction(
+            transaction_view(state),
+            planner=planning.planner,
+            booking=planning.booking,
+            activities=planning.activities,
+            routes=planning.routes,
+            user_profile=profile,
+            log_context=log_context,
+            executor=planning.executor,
+        )
+
+
+def _admission_refused(state: AgentState, exc: BaseException, log_context: LogContext) -> dict[str, Any]:
+    """Nothing is planned; the reply node explains why (``planning_refusal``)."""
+
+    refusal = refusal_for(exc)
+    issue_code = refusal.issue_code if refusal else LIMITS_UNAVAILABLE_ISSUE
+    log_event(
+        logger,
+        "planning.admission",
+        context=log_context,
+        stage="admission",
+        outcome="refused",
+        issue_codes=[issue_code],
     )
+
+    return {
+        "planning_outcome": "unavailable",
+        "candidate_plan": None,
+        "planning_attempts": PLANNING_MAX_ATTEMPTS,
+        "planning_issue_codes": [*state.planning_issue_codes, issue_code],
+        "planning_refusal": refusal.reply if refusal else None,
+    }
 
 
 # ── Reply ───────────────────────────────────────────────────────────
@@ -462,6 +513,7 @@ def _transaction_failed(
         "messages": [message],
         "planning_outcome": "unavailable",
         "candidate_plan": None,
+        "planning_refusal": None,
         "planning_issue_codes": [
             *state.planning_issue_codes,
             *(f"{prefix}{code}" for code in issue_codes if code not in state.planning_issue_codes),

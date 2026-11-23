@@ -8,6 +8,11 @@ One planning run has ONE limit on paid place searches, shared by all of
 its attempts. Its count is kept in ``planning_searches_used`` next to
 ``planning_attempts``, so a run continued in a later graph turn goes on
 from the same count; ``planning_reset`` starts both again for a new run.
+
+Cancelling the run (a request time limit, shutdown) stops the worker
+thread too: a ``CancellationToken`` is checked before every stage and every
+paid place search, and the coroutine waits (boundedly) for the thread to
+stop, so whoever holds a planning slot holds it until the spending ends.
 """
 
 from __future__ import annotations
@@ -19,11 +24,12 @@ import logging
 from collections.abc import Mapping, Sequence
 from concurrent.futures import Executor
 from datetime import date
-from typing import Any
+from typing import Any, Final
 
 from app.modules.activities.policies import preferences_from_profile
 from app.modules.activities.service import ActivityPlanningService
 from app.modules.booking.service import BookingPlanningService
+from app.shared.cancellation import CancellationToken
 from app.shared.observability import (
     LogContext,
     log_event,
@@ -58,6 +64,11 @@ _FINAL_STOP_REASONS = frozenset(
     {"invalid_input", "booking_unrecoverable", "no_progress", "provider_quota_exhausted"}
 )
 
+# How long a cancelled run waits for its worker thread to reach its next
+# check: one provider call with its retries (SerpAPI: 15 s per try). A
+# slower stop is logged as ``transaction.stop_overdue`` and not waited for.
+STOP_GRACE_SECONDS: Final = 60.0
+
 
 class TripPlanningStages:
     """``PlanningStages`` for one trip held in ``AgentState``."""
@@ -71,15 +82,21 @@ class TripPlanningStages:
         routes: DailyRouteService,
         user_profile: Mapping[str, Any] | None = None,
         search_quota: SearchQuota | None = None,
+        cancellation: CancellationToken | None = None,
     ) -> None:
         self._state = state
         self._booking = booking
         self._activities = activities
         self._routes = routes
         self._user_profile = user_profile
-        self.search_quota = search_quota or plan_search_quota(state, activities, user_profile)
+        self.cancellation = cancellation or CancellationToken()
+        self.search_quota = search_quota or plan_search_quota(
+            state, activities, user_profile, cancellation=self.cancellation
+        )
 
     def skeleton(self, *, reuse_evidence: bool) -> SkeletonDraft:
+        self.cancellation.raise_if_cancelled()
+
         try:
             booking_trip_from_state(self._state)
         except ValueError as exc:
@@ -106,6 +123,7 @@ class TripPlanningStages:
         if days is not None and not days:
             return ActivityDraft(itinerary=list(itinerary))
 
+        self.cancellation.raise_if_cancelled()
         result = self._activities.plan(
             activity_request_from_state(
                 self._state,
@@ -127,6 +145,7 @@ class TripPlanningStages:
         *,
         days: frozenset[int] | None,
     ) -> RouteDraft:
+        self.cancellation.raise_if_cancelled()
         result = self._routes.build_daily_maps(itinerary, days=days)
 
         return RouteDraft(
@@ -139,6 +158,8 @@ def plan_search_quota(
     state: AgentState,
     activities: ActivityPlanningService,
     user_profile: Mapping[str, Any] | None,
+    *,
+    cancellation: CancellationToken | None = None,
 ) -> SearchQuota:
     """The run's search limit, counting searches it already used."""
 
@@ -146,6 +167,7 @@ def plan_search_quota(
         days=_trip_days(state),
         pacing=preferences_from_profile(user_profile).pacing,
         used=state.planning_searches_used,
+        cancellation=cancellation,
     )
 
 
@@ -188,13 +210,16 @@ async def run_planning_transaction(
     user_profile: Mapping[str, Any] | None = None,
     log_context: LogContext | None = None,
     executor: Executor | None = None,
+    stop_grace_seconds: float = STOP_GRACE_SECONDS,
 ) -> dict[str, Any]:
     """Build a validated private candidate; the public plan is never touched.
 
     ``state.planning_attempts`` counts attempts across graph turns, so a
     re-entry only gets the attempts that are left. The transaction runs on
     ``executor`` (planning's own threads) or, without one, the loop's
-    default pool.
+    default pool. If this coroutine is cancelled, the worker is told to stop
+    and awaited for up to ``stop_grace_seconds`` before the cancellation
+    goes on.
     """
 
     remaining = PLANNING_MAX_ATTEMPTS - state.planning_attempts
@@ -236,22 +261,25 @@ async def run_planning_transaction(
         user_profile=user_profile,
     )
 
+    # As asyncio.to_thread does, but on the given pool: the context goes
+    # along, so log fields and tracing stay attached.
+    build = functools.partial(
+        contextvars.copy_context().run,
+        planner.build,
+        requirements,
+        stages,
+        max_attempts=remaining,
+        log_context=log_context,
+    )
+    worker = asyncio.get_running_loop().run_in_executor(executor, build)
+
     try:
-        # As asyncio.to_thread does, but on the given pool: the context goes
-        # along, so log fields and tracing stay attached.
-        build = functools.partial(
-            contextvars.copy_context().run,
-            planner.build,
-            requirements,
-            stages,
-            max_attempts=remaining,
-            log_context=log_context,
-        )
-        result = await asyncio.get_running_loop().run_in_executor(executor, build)
+        # Shielded: cancelling this coroutine must not detach the worker
+        # future, which is still needed to learn when the thread stops.
+        result = await asyncio.shield(worker)
 
     except asyncio.CancelledError:
-        # The worker thread finishes its current provider call; its result
-        # is discarded and nothing reaches the state.
+        stopped = await _stop_worker(worker, stages.cancellation, stop_grace_seconds)
         log_event(
             logger,
             "planning.complete",
@@ -260,11 +288,37 @@ async def run_planning_transaction(
             ),
             stage="transaction",
             outcome="interrupted",
-            issue_codes=["transaction.cancelled"],
+            issue_codes=["transaction.cancelled" if stopped else "transaction.stop_overdue"],
         )
         raise
 
     return planning_state_update(state, result, searches_used=stages.search_quota.used)
+
+
+async def _stop_worker(
+    worker: asyncio.Future[Any],
+    cancellation: CancellationToken,
+    grace_seconds: float,
+) -> bool:
+    """Tell the worker to stop and wait for it; True once it has stopped.
+
+    The worker raises ``OperationCancelled`` at its next check. Whatever it
+    ends with is discarded: nothing reaches the state.
+    """
+
+    cancellation.cancel()
+
+    if not worker.done():
+        await asyncio.wait({worker}, timeout=grace_seconds)
+
+    if not worker.done():
+        return False
+
+    if not worker.cancelled():
+        # Retrieved, or asyncio logs "exception was never retrieved".
+        worker.exception()
+
+    return True
 
 
 def planning_state_update(

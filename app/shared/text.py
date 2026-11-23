@@ -6,7 +6,12 @@ from typing import Any
 
 
 def content_text(content: Any) -> str:
-    """Text of message content: a string, or a list of string/text parts."""
+    """Text of message content: a string, or a list of string/text parts.
+
+    Parts are joined as they are, like LangChain's ``BaseMessage.text``:
+    Gemini can split one reply into several text blocks mid-sentence.
+    Blocks without text (thinking, signatures) are skipped.
+    """
 
     if isinstance(content, str):
         return content
@@ -20,7 +25,7 @@ def content_text(content: Any) -> str:
             elif isinstance(part, dict) and "text" in part:
                 parts.append(str(part["text"]))
 
-        return " ".join(parts)
+        return "".join(parts)
 
     return "" if content is None else str(content)
 
